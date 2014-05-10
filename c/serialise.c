@@ -65,6 +65,9 @@ void charbuf_addchar(struct charbuf *b, char c) {
 	b->p[b->alloc-b->free] = c;
 	b->free--;
 }
+void charbuf_addchars(struct charbuf *b, char c, int len) {
+	while(len--) charbuf_addchar(b, c);
+}
 void charbuf_addnumber(struct charbuf *b, double num) {
 	charbuf_make_space(b, MAXNUMLEN);
 	b->free -= sprintf(&b->p[b->alloc-b->free], "%.14g", num);
@@ -113,8 +116,6 @@ int unserialise_variable(lua_State *L, char **str) {
 	int			copyflag = 0;
 	lua_Number	num;
 
-	fprintf(stderr, "unserialise_variable called with: %s\n", p);
-	
 	REMOVE_SPACE(p);	// remove leading whitespace
 	if(*p == '"') {
 		e = (char *)++p;
@@ -157,6 +158,10 @@ int unserialise_variable(lua_State *L, char **str) {
 		p++;
 		fprintf(stderr, "new list\n");
 		lua_newtable(L);
+		lua_pushstring(L, "__list");
+		lua_pushnumber(L, 1);
+		lua_rawset(L, -3);
+		// TODO: set ref to tell us we are a list
 		while(*p != ']') {
 			fprintf(stderr, "index %d\n", i);
 			lua_pushnumber(L, i++);
@@ -207,11 +212,15 @@ err:	*str = 0;
  * We use charbuf to concat the string in a reasonably efficient way
  *==============================================================================
  */
-int serialise_variable(lua_State *L, int index, struct charbuf *b, int pretty) {
+#define INDENTING			(indent>-1)
+#define INDENT(b)			if(indent>-1) charbuf_addchars(b, ' ', indent)
+
+int serialise_variable(lua_State *L, int index, struct charbuf *b, int indent) {
 	const char	*p;
 	size_t		len;
 	int			type = lua_type(L, index);
 	int			first = 1;
+	int			i = 1;
 
 	switch(type) {
 	case LUA_TBOOLEAN:
@@ -244,21 +253,55 @@ int serialise_variable(lua_State *L, int index, struct charbuf *b, int pretty) {
 		charbuf_addchar(b, '"');
 		break;
 	case LUA_TTABLE:
-		charbuf_addchar(b, '{');
-		lua_pushnil(L);
-		if(index < 0) index--;		// allow for the extra pushnil if we are negative
-		while(lua_next(L, index) != 0) {
-			if(first)
-				first = 0;
-			else
-				charbuf_addchar(b, ',');
-	
-			serialise_variable(L, -2, b, 0);
-			charbuf_addchar(b, ':');
-			serialise_variable(L, -1, b, pretty);
+		// we could be a hash, or we could be a list (look for __list)
+		lua_getfield(L, index, "__list");
+		if(lua_isnil(L, -1)) {
+			// We are a normal hash...
 			lua_pop(L, 1);
+			charbuf_addchar(b, '{');
+			if(INDENTING) { charbuf_addchar(b, '\n'); indent += 4; }
+
+			lua_pushnil(L);
+			if(index < 0) index--;		// allow for the extra pushnil if we are negative
+			while(lua_next(L, index) != 0) {
+				if(first)
+					first = 0;
+				else
+					(INDENTING ? charbuf_addstring(b, " ,\n", 3) : charbuf_addchar(b, ','));
+	
+				INDENT(b);	
+				serialise_variable(L, -2, b, 0);
+				(INDENTING ? charbuf_addstring(b, " : ", 3) : charbuf_addchar(b, ':'));
+				serialise_variable(L, -1, b, indent);
+				lua_pop(L, 1);
+			}
+			if(INDENTING) { charbuf_addchar(b, '\n'); indent -= 4; INDENT(b); }
+			charbuf_addchar(b, '}');
+		} else {
+			// We are an indexed list...
+			lua_pop(L, 1);
+
+			charbuf_addchar(b, '[');
+			if(INDENTING) { charbuf_addchar(b, '\n'); indent += 4; }
+
+			while(1) {
+				lua_rawgeti(L, index, i++);
+				if(lua_isnil(L, -1)) {
+					lua_pop(L, 1);
+					break;
+				}
+				if(first)
+					first = 0;
+				else
+					(INDENTING ? charbuf_addstring(b, " ,\n", 3) : charbuf_addchar(b, ','));
+
+				INDENT(b);
+				serialise_variable(L, -1, b, indent);
+				lua_pop(L, 1);
+			}
+			if(INDENTING) { charbuf_addchar(b, '\n'); indent -= 4; INDENT(b); }
+			charbuf_addchar(b, ']');
 		}
-		charbuf_addchar(b, '}');
 		break;
 	}
 	return 0;
@@ -272,6 +315,15 @@ int unserialise(lua_State *L) {
 }
     
 int serialise(lua_State *L) {
-	return 0;
+	struct charbuf 	*b = charbuf_new();
+	char			*s;
+	int				len;
+
+	serialise_variable(L, 1, b, 0);
+	s = charbuf_tostring(b, &len);
+	lua_pushlstring(L, s, len);
+	free(s);
+		
+	return 1;
 }
 
