@@ -27,7 +27,7 @@ clean:
 #
 # Which objects to each of the libs need...
 #
-unisvr.so:			unisvr.o
+unisvr.so:			unisvr.o serialise.o
 
 #
 # Special Flags

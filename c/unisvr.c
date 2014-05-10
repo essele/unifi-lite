@@ -19,6 +19,8 @@
 #include <openssl/evp.h>
 #include <openssl/err.h>
 
+#include "serialise.h"
+
 /*==============================================================================
  * Globals (local to this module)
  *==============================================================================
@@ -446,8 +448,11 @@ static int do_decrypt(lua_State *L) {
 
 	data = decrypt(c, key);
 	fprintf(stderr, "DATA: %s\n", data);
+
+	// Now we can unserialise it...
+	unserialise_variable(L, &data);
 	
-	return 0;
+	return 1;
 }
 
 /*==============================================================================
@@ -515,9 +520,15 @@ static int get_client(lua_State *L) {
 
 	// TODO: deal with compression
 
-	// We only put the data here if it's not encrypted
+	// We only unserialise the data here if it's not encrypted
 	if((flags&1) == 0) {
-		TABLE("data", lstring, (char *)hdr->data, ntohl(hdr->data_length));
+		char *data = (char *)hdr->data;
+
+		lua_pushstring(L, "data");
+		//TABLE("data", lstring, (char *)hdr->data, ntohl(hdr->data_length));
+		unserialise_variable(L, &data);
+		// TODO: error conditions
+		lua_settable(L, -3);
 	}
 	fprintf(stderr, "c=0x%p\n", c);
 	return 1;
@@ -531,6 +542,8 @@ static const struct luaL_reg lib[] = {
 	{"init", init},
 	{"get_client", get_client},
 	{"decrypt", do_decrypt},
+	{"unser", unserialise},			// lee serialise.c
+	{"serialise", serialise},		// lee serialise.c
 	{NULL, NULL}
 };
 

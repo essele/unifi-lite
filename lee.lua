@@ -35,7 +35,10 @@ rc = ffi.C.bind(fd, svr, 16);
 
 io.write("Socket" .. fd);
 
-unisvr.init();
+unisvr.unser()
+
+--[[
+unisvr.init()
 
 t = unisvr.get_client();
 
@@ -47,4 +50,4 @@ print("Encrypted: " .. t.encrypted);
 
 x = unisvr.decrypt(t);
 
-
+--]]
