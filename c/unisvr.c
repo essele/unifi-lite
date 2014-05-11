@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <ctype.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -359,6 +360,9 @@ struct client *clean_and_find_ready() {
 /*------------------------------------------------------------------------------
  * Simple routine to convert binary to hex, this uses a global so can't be used
  * multithreaded.
+ *
+ * Unhex requires a buffer of suitable length to be provided, so takes a max
+ * value to limit the size of the output.
  *------------------------------------------------------------------------------
  */
 #define MAX_TOHEX	32
@@ -379,6 +383,23 @@ char *hex(unsigned char *buf, int len) {
 	*p = 0;
 	return hexbuf;
 }
+
+int unhex(char *string, uint8_t *buf, int max) {
+	static const char 	hl[16] = "0123456789abcdef";
+	uint8_t				v;
+	int					i = 0;
+
+	if(strspn(string, hl) != strlen(string)) return 0;
+
+	while(*string && *(string+1) && i++ < max) {
+		v = (uint8_t)(strchr(hl, tolower(*string++)) - hl);
+		*buf = (v << 4);
+		v = (uint8_t)(strchr(hl, tolower(*string++)) - hl);
+		*buf++ |= v;
+	}
+	return i;
+}
+
 
 /*------------------------------------------------------------------------------
  * Initialise the OpenSSL library ready for future encryption/decryption needs
@@ -432,27 +453,61 @@ err:
 }
 /*==============================================================================
  * Provide our service data for the unit_service module
+ *
+ * decrypt(table, key)
  *==============================================================================
  */
 static int do_decrypt(lua_State *L) {
 	struct client 	*c;
-	char			*data;
-	uint8_t 		key[17] = {
-			0xba, 0x86, 0xf2, 0xbb, 0xe1, 0x07, 0xc7, 0xc5,
-			0x7e, 0xb5, 0xf2, 0x69, 0x07, 0x75, 0xc7, 0x12, 0x00 };
+	char			*data, *p;
+	uint8_t			key[17];
+	char			*err;
+//	uint8_t 		key[17] = {
+//			0xba, 0x86, 0xf2, 0xbb, 0xe1, 0x07, 0xc7, 0xc5,
+//			0x7e, 0xb5, 0xf2, 0x69, 0x07, 0x75, 0xc7, 0x12, 0x00 };
 
 	luaL_checktype(L, 1, LUA_TTABLE);
+	luaL_checktype(L, 2, LUA_TSTRING);
+
+	// Get the client reference...
 	lua_getfield(L, 1, "_ref");
+	if(!lua_islightuserdata(L, -1)) {
+		err = "invalid table, no client reference";
+		goto err1;
+	}
 	c = (struct client *)lua_topointer(L, -1);
-	fprintf(stderr, "c=0x%p\n", c);
 
+	// Build the key...
+	p = (char *)lua_tostring(L, 2);
+	if(strlen(p) != 32 || unhex(p, key, 16) != 16) {
+		err = "invalid key - expect 16 hex digits";
+		goto err;
+	}
+
+	// Decrypt the data
 	data = decrypt(c, key);
-	fprintf(stderr, "DATA: %s\n", data);
+	if(!data) {
+		err = "unable to decrypt";
+		goto err;
+	}
 
-	// Now we can unserialise it...
-	unserialise_variable(L, &data);
-	
+	// Now we can unserialise it... keep a ref so we can free it
+	p = data;
+	lua_pushstring(L, "data");
+	if(!unserialise_variable(L, &p)) {
+		err = "unable to decode data";
+		goto err1;
+	}
+	lua_settable(L, 1);
+	free(data);
+
+	lua_pushboolean(L, 1);	
 	return 1;
+
+err1:	lua_pop(L, 1);
+err:	lua_pushboolean(L, 0);
+		lua_pushstring(L, err);
+		return 2;
 }
 
 /*==============================================================================
@@ -520,17 +575,15 @@ static int get_client(lua_State *L) {
 
 	// TODO: deal with compression
 
-	// We only unserialise the data here if it's not encrypted
+	// We only unserialise the data here if it's not encrypted, if we
+	// can't unserialise then we'll clear the data field (nil)
 	if((flags&1) == 0) {
 		char *data = (char *)hdr->data;
 
 		lua_pushstring(L, "data");
-		//TABLE("data", lstring, (char *)hdr->data, ntohl(hdr->data_length));
-		unserialise_variable(L, &data);
-		// TODO: error conditions
+		if(!unserialise_variable(L, &data)) lua_pushnil(L);
 		lua_settable(L, -3);
 	}
-	fprintf(stderr, "c=0x%p\n", c);
 	return 1;
 }
 

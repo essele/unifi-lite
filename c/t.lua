@@ -8,11 +8,17 @@ unisvr.init()
 
 x = unisvr.get_client()
 
-t = unisvr.decrypt(x)
+if(x.encrypted) then
+	rc, err = unisvr.decrypt(x, "ba86f2bbe107c7c57eb5f2690775c712")
+	if(not rc) then
+		print("err is "..err);
+		return 0
+	end
+end
 
-print("t is " .. tostring(t))
+print("t is " .. tostring(x))
 
-print(unisvr.serialise(t))
+print(unisvr.serialise(x))
 
 -- print("rrr is " .. t.rrr)
 -- print("rrr is " .. type(t.rrr))

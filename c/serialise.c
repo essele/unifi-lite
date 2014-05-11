@@ -323,7 +323,6 @@ int serialise(lua_State *L) {
 	s = charbuf_tostring(b, &len);
 	lua_pushlstring(L, s, len);
 	free(s);
-		
 	return 1;
 }
 
