@@ -27,12 +27,12 @@ clean:
 #
 # Which objects to each of the libs need...
 #
-unisvr.so:			unisvr.o serialise.o
+unisvr.so:			unisvr.o serialise.o utils.o
 
 #
 # Special Flags
 #
-LDFLAGS_unisvr.so = -lssl
+LDFLAGS_unisvr.so = -lssl -lrt
 
 include $(ALL_D)
 

@@ -4,6 +4,30 @@ package.cpath = "/home/essele/dev/unifi/c/?.so"
 
 unisvr = package.loadlib("./unisvr.so", "luaopen_unisvr")()
 
+
+--[[
+  [[ Generate a string of random hex bytes up to a specific
+  [[ length
+  [[
+  ]]--
+
+function hex_string(len)
+	local i = 0
+	local rc = ""
+
+	math.randomseed(unisvr.time());
+	while(i < len) do
+		rc = rc .. string.format("%02x", math.random(0,255));
+		i = i +1
+	end
+	return rc
+end
+
+print(hex_string(16));
+
+
+
+
 unisvr.init()
 
 x = unisvr.get_client()
@@ -18,7 +42,28 @@ end
 
 print("t is " .. tostring(x))
 
-print(unisvr.serialise(x))
+t = {}
+t._type = "setparam"
+t.server_time_in_utc = unisvr.time()
+
+unisvr.add_cfg(t, "mgmtcfg", "mgmt.is_default", "false");
+unisvr.add_cfg(t, "mgmtcfg", "mgmt.authkey", "TODO");
+unisvr.add_cfg(t, "mgmtcfg", "mgmt.cfgversion", "TODO");
+unisvr.add_cfg(t, "mgmtcfg", "mgmt.servers.1.url", "TODO");
+unisvr.add_cfg(t, "mgmtcfg", "mgmt.selfrun_guest_mode", "TODO");
+unisvr.add_cfg(t, "mgmtcfg", "selfrun_guest_mode", "TODO");
+unisvr.add_cfg(t, "mgmtcfg", "cfgversion", "TODO");
+unisvr.add_cfg(t, "mgmtcfg", "led_enabled", "TODO");
+unisvr.add_cfg(t, "mgmtcfg", "authkey", "TODO");
+
+-- If authkey was provided, then we don't need the standalone "authkey" bit
+
+
+print(unisvr.serialise(t))
+
+
+
+--print(unisvr.serialise(x))
 
 -- print("rrr is " .. t.rrr)
 -- print("rrr is " .. type(t.rrr))

@@ -1,3 +1,22 @@
+/*------------------------------------------------------------------------------
+ *  This file is part of UniFi-lite.
+ *  Copyright (C) 2014 Lee Essen <lee.essen@nowonline.co.uk>
+ *
+ *  This program is free software: you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation, either version 3 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *------------------------------------------------------------------------------
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +29,8 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <ctype.h>
+#include <errno.h>
+#include <stdarg.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -21,15 +42,25 @@
 #include <openssl/err.h>
 
 #include "serialise.h"
+#include "utils.h"
 
 /*==============================================================================
  * Globals (local to this module)
  *==============================================================================
  */
-#define BACKLOG			128				// max outstanding connections
+#define BACKLOG			128						// max outstanding connections
+#define LOG_FILE		"./x.log"				// for logging issues
+
+#define LOG_FATAL		0
+#define LOG_ERROR		1
+#define LOG_WARN		2
+#define LOG_INFO		3
+#define LOG_DEBUG		4
 
 static char				HTTP_SEP[5] = { 0x0d, 0x0a, 0x0d, 0x0a, 0x00 };
-static int				http_fd;		// socket for http listener
+static int				http_fd;				// socket for http listener
+static FILE				*logf;					// fh for log file
+static int				log_level = LOG_INFO;	// default logging level
 
 /*
  * The header structure for an "inform" message
@@ -72,6 +103,39 @@ struct client {
 struct client 		*clients;
 
 /*==============================================================================
+ * Write stuff into our log file, we have a level and only write stuff that is
+ * less than or equal the level
+ *==============================================================================
+ */
+char	*log_levels[5] = { "FATAL:", "ERROR:", "WARN:", "INFO:", "DEBUG:" };
+static void wlog(int level, char *fmt, ...) {
+	va_list 	ap;
+	char		tstr[30];
+	time_t		t;
+	struct tm	*tmp;
+
+	// Sanity on the log_level...	
+	if(level > log_level) return;
+	if(level < 0 || level > 4) level = LOG_ERROR;
+
+	// Inclue the time format...
+	t = time(NULL);
+	tmp = localtime(&t);
+	if(tmp == NULL) {
+		sprintf(tstr, "--unknown--");
+	} else {
+		strftime(tstr, sizeof(tstr), "%b %d %T", tmp);
+	}
+
+	// Output...
+	va_start(ap, fmt);
+	fprintf(logf, "%s  %-6.6s ", tstr, log_levels[level]);
+	vfprintf(logf, fmt, ap);
+	fprintf(logf, "\n");
+	fflush(logf);
+}
+ 
+/*==============================================================================
  * Open our socket, set the settings, and return the fd for the HTTP listener
  *==============================================================================
  */
@@ -83,39 +147,39 @@ static int bind_listener(char *ip, int port) {
 
 	s = socket(AF_INET, SOCK_STREAM, 0);
 	if(s < 0) {
-		fprintf(stderr, "socket failed\n");
+		wlog(LOG_ERROR, "%s: socket() failed: %s", __func__, strerror(errno));
 		goto err;
 	}
 	if(setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &sopt, sizeof(sopt)) < 0) {
-		fprintf(stderr, "setsockopt failed\n");
+		wlog(LOG_ERROR, "%s: setsockopt(SO_REUSEADDR) failed: %s", __func__, strerror(errno));
 		goto err;
 	}
 	flags = fcntl(s, F_GETFL, 0);
 	if(flags < 0) {
-		fprintf(stderr, "unable to fcntl GETFL\n");
+		wlog(LOG_ERROR, "%s: fcntl(F_GETFL) failed: %s", __func__, strerror(errno));
 		goto err;
 	}
 	flags |= O_NONBLOCK;
 	if(fcntl(s, F_SETFL, flags) < 0) {
-		fprintf(stderr, "unable to fcntl SETFL\n");
+		wlog(LOG_ERROR, "%s: fcntl(F_SETFL) failed: %s", __func__, strerror(errno));
 		goto err;
 	}
 	
 	memset(&me, 0, sizeof(struct sockaddr_in));
 	if(inet_pton(AF_INET, ip, (void *)&me.sin_addr) != 1) {
-		fprintf(stderr, "inet_pton failed\n");
+		wlog(LOG_ERROR, "%s: inet_pton(%s) failed: %s", ip, __func__, strerror(errno));
 		goto err;
 	}
 	me.sin_port = htons(port);
 	me.sin_family = AF_INET;
 
 	if(bind(s, (struct sockaddr *)&me, sizeof(struct sockaddr_in)) < 0) {
-		fprintf(stderr, "bind failed\n");
+		wlog(LOG_ERROR, "%s: bind() failed: %s", __func__, strerror(errno));
 		goto err;
 	}
 
 	if(listen(s, BACKLOG) < 0) {
-		fprintf(stderr, "listen failed\n");
+		wlog(LOG_ERROR, "%s: listen(%d) failed: %s", __func__, BACKLOG, strerror(errno));
 		goto err;
 	}
 	return s;
@@ -161,7 +225,7 @@ int find_content_length(char *haystack) {
 struct client *new_client(int fd) {
 	struct client *c = malloc(sizeof(struct client));
 	if(!c) {
-		fprintf(stderr, "fatal: unable to create client\n");
+		wlog(LOG_FATAL, "%s: unable to create client: malloc(): %s", __func__, strerror(errno));
 		exit(1);
 	}
 	memset(c, 0, sizeof(struct client));
@@ -184,7 +248,7 @@ int read_data(struct client *c) {
 	if(space < 2048) {
 		c->buffer = realloc(c->buffer, c->b_size + 8192);
 		if(!c->buffer) {
-			fprintf(stderr, "fatal: unable to extend buffer\n");
+			wlog(LOG_ERROR, "%s: unable to extend buffer: realloc(): %s", __func__, strerror(errno));
 			c->state = 9;				// discard client
 			return -1;
 		}
@@ -197,7 +261,7 @@ int read_data(struct client *c) {
 		fprintf(stderr, "EOF\n");
 		c->state = 9;					// discard client
 	} else if(n < 0) {
-		fprintf(stderr, "READ ERROR\n");
+		wlog(LOG_ERROR, "%s: read error on client: %s", __func__, strerror(errno));
 		c->state = 9;					// discard client
 	} else {
 		c->complete += n;
@@ -216,7 +280,6 @@ int process_http_header(struct client *c) {
 	if(i >= 0) {
 		*(c->buffer + i) = '\0';
 		cl = find_content_length(c->buffer);
-		fprintf(stderr, "content length=%d\n", cl);
 		if(cl <= 0) {
 			c->state = 9;
 			return -1;
@@ -228,7 +291,7 @@ int process_http_header(struct client *c) {
 		c->state = 1;
 		return cl;
 	} else if(c->complete >= 2048) {
-		fprintf(stderr, "nothing found within 2048, discarding\n");
+		wlog(LOG_WARN, "%s: nothing found within 2048, discarding", __func__);
 		c->state = 9;
 		return -1;
 	}
@@ -296,7 +359,7 @@ static int select_loop() {
 			int togo = c->expected - c->complete;
 			int len = write(c->fd, c->buffer+c->complete, togo);
 			if(len < 0) {
-				fprintf(stderr, "write error\n");
+				wlog(LOG_ERROR, "%s: write error on client: %s", __func__, strerror(errno));
 				c->state = 9;
 				continue;
 			}
@@ -318,7 +381,7 @@ static int select_loop() {
 
 		fd = accept(http_fd, (struct sockaddr *)&peer, &len);
 		if(fd < 0) {
-			fprintf(stderr, "accept failed\n");
+			wlog(LOG_ERROR, "%s: accept() failed: %s", __func__, strerror(errno));
 			return -1;
 		}
 		
@@ -373,7 +436,7 @@ char *hex(unsigned char *buf, int len) {
 	char *p = hexbuf;
 
 	if(len > MAX_TOHEX) {
-		fprintf(stderr, "FATAL: to long hex conversion\n");
+		wlog(LOG_FATAL, "%s: too long hex conversion (%d, MAX=%d)", __func__, len, MAX_TOHEX);
 		exit(1);
 	}
 	for(i=0; i<len; i++) {
@@ -418,35 +481,36 @@ char *decrypt(struct client *c, unsigned char *key) {
 	int 				tlen, olen;
 	unsigned char		*plain = malloc(ilen+1);
 	unsigned char		*iv = c->iv;
+	unsigned long		err;
 	EVP_CIPHER_CTX		*ctx;
 
 	if(!plain) goto err;
 	if(!(ctx = EVP_CIPHER_CTX_new())) {
-		fprintf(stderr, "unable to create cipher context\n");
+		wlog(LOG_ERROR, "%s: EVP_CIPHER_CTX_new() failed", __func__);
 		goto err;
 	}
 	if(EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv) != 1) {
-		fprintf(stderr, "unable to initialise decrypt\n");
+		wlog(LOG_ERROR, "%s: EVP_DecryptInit_ex() failed", __func__);
 		goto err;
 	}
 	if(EVP_DecryptUpdate(ctx, plain, &tlen, c->data, ilen) != 1) {
-		fprintf(stderr, "unable to decrypt\n");
+		wlog(LOG_ERROR, "%s: EVP_DecryptUpdate() failed", __func__);
 		goto err;
 	}
-	fprintf(stderr, "tlen=%d ilen=%d\n", tlen, ilen);
 	olen = tlen;
 	if(EVP_DecryptFinal(ctx, plain+tlen, &tlen) != 1) {
-		fprintf(stderr, "unable to finish decrypt\n");
+		wlog(LOG_ERROR, "%s: EVP_DecryptFinal() failed", __func__);
 		goto err;
 	}
 	olen += tlen;
-	fprintf(stderr, "tlen=%d ilen=%d\n", tlen, ilen);
 	plain[olen] = '\0';
 	EVP_CIPHER_CTX_free(ctx);
 	return (char *)plain;
 
 err:
-	ERR_print_errors_fp(stderr);
+	while((err = ERR_get_error())) {
+		wlog(LOG_ERROR, "%s: SSL Error: %s", __func__, ERR_error_string(err, NULL));
+	}
 	if(ctx) EVP_CIPHER_CTX_free(ctx);
 	if(plain) free(plain);
 	return NULL;
@@ -518,7 +582,7 @@ static int init(lua_State *L) {
 
 	struct client *head = malloc(sizeof(struct client));
 	if(!head) {
-		fprintf(stderr, "unable to malloc client head\n");
+		wlog(LOG_FATAL, "%s: unable to create client head: malloc(): %s", __func__, strerror(errno));
 		return 0;
 	}
 	head->next = NULL;
@@ -595,8 +659,11 @@ static const struct luaL_reg lib[] = {
 	{"init", init},
 	{"get_client", get_client},
 	{"decrypt", do_decrypt},
-	{"unser", unserialise},			// lee serialise.c
-	{"serialise", serialise},		// lee serialise.c
+	{"unserialise", unserialise},		// see serialise.c
+	{"serialise", serialise},			// see serialise.c
+	{"time", get_time},					// see utils.c
+	{"add_cfg", add_cfg},				// see utils.c
+//	{"log", lua_log},		// TODO
 	{NULL, NULL}
 };
 
@@ -607,6 +674,11 @@ static const struct luaL_reg lib[] = {
 int luaopen_unisvr(lua_State *L) {
 	// Initialise the module...
 	luaL_openlib(L, "unisvr", lib, 0);
+
+	if(!(logf = fopen(LOG_FILE, "a"))) {
+		fprintf(stderr, "WARNING: unable to open log file (%s): %s\n", LOG_FILE, strerror(errno));
+	}
+	wlog(LOG_WARN, "starting.");
 
 	return 1;
 }

@@ -131,19 +131,15 @@ int unserialise_variable(lua_State *L, char **str) {
 	} else if(*p == '{') {
 		// We are a table, we should have key value pairs...
 		p++;
-		fprintf(stderr, "newtable\n");
 		lua_newtable(L);
 		REMOVE_SPACE(p);
 		while(*p != '}') {
 			// keys are always strings so we can use this routing...
 			if(!unserialise_variable(L, &p)) goto err1;
-		fprintf(stderr, "have key\n");
 			REMOVE_SPACE(p);
 			if(*p++ != ':') goto err1;
-		fprintf(stderr, "have colon\n");
 			REMOVE_SPACE(p);
 			if(!unserialise_variable(L, &p)) goto err1;
-		fprintf(stderr, "have value\n");
 			lua_rawset(L, -3);
 			REMOVE_SPACE(p);
 			if(*p != ',') break;
@@ -156,18 +152,15 @@ int unserialise_variable(lua_State *L, char **str) {
 	} else if(*p == '[') {
 		// We are a list...
 		p++;
-		fprintf(stderr, "new list\n");
 		lua_newtable(L);
 		lua_pushstring(L, "__list");
 		lua_pushnumber(L, 1);
 		lua_rawset(L, -3);
 		// TODO: set ref to tell us we are a list
 		while(*p != ']') {
-			fprintf(stderr, "index %d\n", i);
 			lua_pushnumber(L, i++);
 			REMOVE_SPACE(p);
 			if(!unserialise_variable(L, &p)) goto err2;
-			fprintf(stderr, "have value\n");
 			lua_rawset(L, -3);
 			REMOVE_SPACE(p);
 			if(*p != ',') break;
@@ -213,7 +206,7 @@ err:	*str = 0;
  *==============================================================================
  */
 #define INDENTING			(indent>-1)
-#define INDENT(b)			if(indent>-1) charbuf_addchars(b, ' ', indent)
+#define INDENT(b)			if(indent>-1) charbuf_addchars(b, '\t', indent)
 
 int serialise_variable(lua_State *L, int index, struct charbuf *b, int indent) {
 	const char	*p;
@@ -238,8 +231,10 @@ int serialise_variable(lua_State *L, int index, struct charbuf *b, int indent) {
 			case '\"':
 			case '\\':
 			case '\n':
-				charbuf_addchar(b, '\\');
+				// For this use case we keep \n as it is
+				// charbuf_addchar(b, '\\');
 				charbuf_addchar(b, *p++);
+				if(INDENTING) charbuf_addchars(b, '\t', 5);
 				break;
 			case '\0':
 				charbuf_addstring(b, "\\000", 4);
@@ -259,7 +254,7 @@ int serialise_variable(lua_State *L, int index, struct charbuf *b, int indent) {
 			// We are a normal hash...
 			lua_pop(L, 1);
 			charbuf_addchar(b, '{');
-			if(INDENTING) { charbuf_addchar(b, '\n'); indent += 4; }
+			if(INDENTING) { charbuf_addchar(b, '\n'); indent ++; }
 
 			lua_pushnil(L);
 			if(index < 0) index--;		// allow for the extra pushnil if we are negative
@@ -275,14 +270,14 @@ int serialise_variable(lua_State *L, int index, struct charbuf *b, int indent) {
 				serialise_variable(L, -1, b, indent);
 				lua_pop(L, 1);
 			}
-			if(INDENTING) { charbuf_addchar(b, '\n'); indent -= 4; INDENT(b); }
+			if(INDENTING) { charbuf_addchar(b, '\n'); indent--; INDENT(b); }
 			charbuf_addchar(b, '}');
 		} else {
 			// We are an indexed list...
 			lua_pop(L, 1);
 
 			charbuf_addchar(b, '[');
-			if(INDENTING) { charbuf_addchar(b, '\n'); indent += 4; }
+			if(INDENTING) { charbuf_addchar(b, '\n'); indent++; }
 
 			while(1) {
 				lua_rawgeti(L, index, i++);
@@ -299,7 +294,7 @@ int serialise_variable(lua_State *L, int index, struct charbuf *b, int indent) {
 				serialise_variable(L, -1, b, indent);
 				lua_pop(L, 1);
 			}
-			if(INDENTING) { charbuf_addchar(b, '\n'); indent -= 4; INDENT(b); }
+			if(INDENTING) { charbuf_addchar(b, '\n'); indent--; INDENT(b); }
 			charbuf_addchar(b, ']');
 		}
 		break;
