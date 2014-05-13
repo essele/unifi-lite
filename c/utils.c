@@ -21,6 +21,41 @@
 #include <lualib.h>
 #include <errno.h>
 #include <time.h>
+#include <stdlib.h>
+#include <string.h>
+
+
+/*==============================================================================
+ * Function to generate a hex (text) string of a given number bytes
+ * (text length will be twice as long)
+ *
+ * gen_hex(bytes)
+ *==============================================================================
+ */
+int gen_hex(lua_State *L) {
+	static int			seeded = 0;
+	struct timespec		spec;				// for seeding
+	int					i, len;
+	char				*s;
+
+	luaL_checktype(L, 1, LUA_TNUMBER);
+
+	if(!seeded) {
+		clock_gettime(CLOCK_REALTIME, &spec);
+		srand((unsigned int)spec.tv_nsec);
+		seeded++;
+	}
+	len = lua_tonumber(L, 1);
+	s = malloc((len*2)+1);
+	if(!s) {
+		// TODO: log error
+		return 0;
+	}
+	for(i=0; i < len; i++) sprintf(s+(i*2), "%02x", (rand()&0xff));
+	lua_pushlstring(L, s, len*2);
+	free(s);
+	return 1;
+}
 
 /*==============================================================================
  * Simple function to get the time in milliseconds (we return a string since

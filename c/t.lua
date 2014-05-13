@@ -5,42 +5,41 @@ package.cpath = "/home/essele/dev/unifi/c/?.so"
 unisvr = package.loadlib("./unisvr.so", "luaopen_unisvr")()
 
 
+
+print(unisvr.gen_hex(16));
+
+x = unisvr.read_data("fred");
+print("x="..tostring(x));
+print("a="..x.a);
+print("c="..x.c);
+
+
 --[[
-  [[ Generate a string of random hex bytes up to a specific
-  [[ length
-  [[
-  ]]--
-
-function hex_string(len)
-	local i = 0
-	local rc = ""
-
-	math.randomseed(unisvr.time());
-	while(i < len) do
-		rc = rc .. string.format("%02x", math.random(0,255));
-		i = i +1
-	end
-	return rc
-end
-
-print(hex_string(16));
-
-
+l = {}
+l.a = 45;
+l.b = 98;
+l.c = "hello";
+unisvr.write_data("fred", l)
 
 
 unisvr.init()
 
-x = unisvr.get_client()
+c = unisvr.get_client()
 
-if(x.encrypted) then
-	rc, err = unisvr.decrypt(x, "ba86f2bbe107c7c57eb5f2690775c712")
+-- read our record...
+-- if we don't have one then create some stuff
+
+
+if(c.encrypted) then
+	local rc, err = unisvr.decrypt(c, "ba86f2bbe107c7c57eb5f2690775c712")
 	if(not rc) then
 		print("err is "..err);
 		return 0
 	end
 end
 
-print("t is " .. tostring(x))
+print(unisvr.serialise(c))
+
 
 t = {}
 t._type = "setparam"

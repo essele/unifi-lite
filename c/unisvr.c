@@ -240,7 +240,7 @@ struct client *new_client(int fd) {
  * need to
  *------------------------------------------------------------------------------
  */
-int read_data(struct client *c) {
+int read_client_data(struct client *c) {
 	int 	space = c->b_size - c->complete;
 	int 	n;
 	char 	*b;
@@ -337,7 +337,7 @@ static int select_loop() {
 	for(c=clients->next; c; c=c->next) {
 		if(FD_ISSET(c->fd, &fd_r)) {
 			// We are ready to read...
-			if(read_data(c) <= 0) continue;
+			if(read_client_data(c) <= 0) continue;
 
 			// At this point we have some data, if we are state 0 then
 			// we need to look for the end of the header, we'll only do this up
@@ -650,6 +650,93 @@ static int get_client(lua_State *L) {
 	}
 	return 1;
 }
+/*==============================================================================
+ * Given a table (data) we will serialise (in pretty format) and then write
+ * it out to the named file.
+ *
+ * write_data(table, filename)
+ *==============================================================================
+ */
+int write_data(lua_State *L) {
+	char	*p;
+	char	*fname;
+	int		fd, plen;
+	int 	rc = 0;
+
+	luaL_checktype(L, 1, LUA_TSTRING);
+	luaL_checktype(L, 2, LUA_TTABLE);
+
+	// We'll use the lua stack to serialise the table, so we should end
+	// up with a string on the top. The table will be on the top...
+	luaL_checktype(L, -1, LUA_TTABLE);
+	if(serialise(L) != 1) {
+		fprintf(stderr, "AAARGGG\n");
+		goto err;
+	}
+	p = (char *)lua_tostring(L, -1);
+	fprintf(stderr, "serialised: %s\n", p);
+	fname = (char *)lua_tostring(L, 1);
+	plen = strlen(p);
+
+	if((fd = open(fname, O_CREAT|O_WRONLY|O_TRUNC, S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH)) == -1) {
+		wlog(LOG_ERROR, "%s: unable to create data file(%s): %s", __func__, fname, strerror(errno));
+		goto err1;
+	}
+	if(write(fd, p, plen) != plen) {
+		wlog(LOG_ERROR, "%s: unable to write all data(%s)", __func__);
+		close(fd);
+	}
+	close(fd);
+	rc = 1;		// all ok, return true
+
+err1:	lua_pop(L, 1);		// remove the returned string
+err:	lua_pushboolean(L, rc);
+		return 1;
+}
+
+/*==============================================================================
+ * Read a given filename, unserialise the data, and return the resulting value
+ * (which is probably a table)
+ *
+ * read_data(filename)
+ *==============================================================================
+ */
+int read_data(lua_State *L) {
+	int		fd;
+	char	*d = NULL, *fname;
+	off_t	len;
+
+	luaL_checktype(L, 1, LUA_TSTRING);
+	fname = (char *)lua_tostring(L, 1);
+
+	if((fd = open(fname, O_RDONLY)) == -1) {
+		fprintf(stderr, "open(): err=%s\n", strerror(errno));
+		goto err;
+	}
+	// Work out how long the file is...
+	len = lseek(fd, 0, SEEK_END);
+	lseek(fd, 0, SEEK_SET);
+
+	// Allocate a buffer and read...
+	d = malloc(len+1);
+	if(!d) {
+		fprintf(stderr, "malloc problem\n");
+		goto err;
+	}
+	fprintf(stderr, "len=%d\n", (int)len);
+	if(read(fd, d, len) != len) {
+		fprintf(stderr, "read problem\n");
+		goto err;
+	}
+	fprintf(stderr, "about to serialise\n");
+	fprintf(stderr, "%s", d);
+	if(unserialise_variable(L, &d) != 1) goto err;
+	return 1;
+
+err:	if(d) free(d);
+		if(fd >= 0) close(fd);
+		return 0;
+}
 
 /*==============================================================================
  * These are the functions we export to Lua...
@@ -659,10 +746,13 @@ static const struct luaL_reg lib[] = {
 	{"init", init},
 	{"get_client", get_client},
 	{"decrypt", do_decrypt},
+	{"write_data", write_data},
+	{"read_data", read_data},
 	{"unserialise", unserialise},		// see serialise.c
 	{"serialise", serialise},			// see serialise.c
 	{"time", get_time},					// see utils.c
 	{"add_cfg", add_cfg},				// see utils.c
+	{"gen_hex", gen_hex},				// see utils.c
 //	{"log", lua_log},		// TODO
 	{NULL, NULL}
 };

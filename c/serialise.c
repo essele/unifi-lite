@@ -179,6 +179,10 @@ int unserialise_variable(lua_State *L, char **str) {
 			*str = p+5;
 		}
 		return 1;
+	} if(strncmp(p, "null", 4) == 0) {
+		*str = p+4;
+		lua_pushnil(L);
+		return 1;
 	} else {
 		// must be a number...
 		len = strspn(p, "0123456789.-");
@@ -247,6 +251,10 @@ int serialise_variable(lua_State *L, int index, struct charbuf *b, int indent) {
 		}
 		charbuf_addchar(b, '"');
 		break;
+	case LUA_TLIGHTUSERDATA:
+		// this isn't relevant to keeping
+		charbuf_addstring(b, "null", 4);
+		break;
 	case LUA_TTABLE:
 		// we could be a hash, or we could be a list (look for __list)
 		lua_getfield(L, index, "__list");
@@ -314,7 +322,7 @@ int serialise(lua_State *L) {
 	char			*s;
 	int				len;
 
-	serialise_variable(L, 1, b, 0);
+	serialise_variable(L, -1, b, 0);
 	s = charbuf_tostring(b, &len);
 	lua_pushlstring(L, s, len);
 	free(s);
