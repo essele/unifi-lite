@@ -605,7 +605,8 @@ static int init(lua_State *L) {
 							lua_settable(L, -3)
 
 static int get_client(lua_State *L) {
-	struct client *c;
+	struct client 	*c;
+	char			mac[18];
 
 	do {
 		c = clean_and_find_ready();
@@ -625,16 +626,21 @@ static int get_client(lua_State *L) {
 	c->data = hdr->data;
 	memcpy(c->iv, hdr->iv, 16);
 
+	// Put the mac address into a standard format...
+	sprintf(mac, "%02x:%02x:%02x:%02x:%02x:%02x", hdr->mac[0], hdr->mac[1],
+					hdr->mac[2], hdr->mac[3], hdr->mac[4], hdr->mac[5]);
+
 	lua_newtable(L);
 	
 	TABLE("magic", lstring, hdr->magic, 4);
 	TABLE("version", number, ntohl(hdr->version));
-	TABLE("mac", string, hex(hdr->mac, 6));
+	TABLE("mac", string, mac);
 	TABLE("encrypted", number, (flags&1) ? 1 : 0);
 	TABLE("compressed", number, (flags&2) ? 1 : 0);
 	TABLE("iv", string, hex(hdr->iv, 16));
 	TABLE("dataversion", number, ntohl(hdr->data_version));
 	TABLE("datalength", number, c->data_length);
+	TABLE("inform", boolean, 1);
 	TABLE("_ref", lightuserdata, (void *)c);
 
 	// TODO: deal with compression

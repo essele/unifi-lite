@@ -13,18 +13,91 @@ print("x="..tostring(x));
 print("a="..x.a);
 print("c="..x.c);
 
+--l = {}
+--l.a = 45;
+--l.b = 98;
+--l.c = "hello";
+--unisvr.write_data("fred", l)
 
---[[
-l = {}
-l.a = 45;
-l.b = 98;
-l.c = "hello";
-unisvr.write_data("fred", l)
 
+
+-- we will keep live data in a table (key=mac) so that we don't
+-- write too much data to the flash, we don't need to persist
+-- too much.
+registry = {}
+registry.settings = {}			-- overall settings
+registry.ap = {}				-- access points
+
+-- the key to use when we get an initial request
+
+default_key = "ba86f2bbe107c7c57eb5f2690775c712"
+
+
+-- there is a basic state machine process that we need to follow
+-- for "inform" messages.
+--
+-- If we don't know the client then we put it as pending (PENDING)
+-- Once set to adopt, we generate keys and send the base reply (ADOPTING)
+-- Once the base reply is fed back we configure (PROVISIONING)
+-- When complete, it's (CONNECTED)
+
+function process_inform(c)
+	print("Processing client: "..c.mac)
+
+	-- first we work out if we can decrypt the message if it's
+	-- encrypted
+	
+	if(c.encrypted) then
+		if(registry.ap[c.mac] and regstry.ap[c.mac].auth_key) then
+			print("have key for client")
+			local rc, err = unisvr.decrypt(c, registry.ap[c.mac].auth_key)
+			if(not rc) then
+				print("failed to decrypt using specified key, will try default")
+			end
+		end
+
+		if(not c.data) then
+			local rc, err = unisvr.decrypt(c, "ba86f2bbe107c7c57eb5f2690775c712")
+			if(not rc) then
+				print("err is "..err);
+				return 0
+			end
+		end
+	end
+
+	if(not registry.ap[c.mac]) then
+		-- this is the completely unknown case, we simply mark
+		-- the client as pending.
+		registry.ap[c.mac] = {}
+		registry.ap[c.mac].state = "PENDING"
+		registry.ap[c.mac].inform = c.data
+		print("new client in pending state: "..c.mac)
+		-- TODO: reply
+		return
+	end
+
+end
+
+
+
+-- this is the main loop that sits waiting for network connections.
+-- we will accept an "inform" message from an access point or a local
+-- connection from the admin client
+
+local c			-- the client/control message
 
 unisvr.init()
+while(1) do
+	-- get an "inform" or a "control" message
+	c = unisvr.get_client()
 
-c = unisvr.get_client()
+	-- process the message
+	if(c.inform) then
+		process_inform(c)
+	else
+		print("unknown message")
+	end
+end
 
 -- read our record...
 -- if we don't have one then create some stuff
