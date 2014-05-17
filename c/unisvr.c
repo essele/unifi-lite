@@ -527,7 +527,8 @@ static int do_encrypt(lua_State *L) {
 	// Serialise the data
 	lua_pushcfunction(L, serialise);
 	lua_getfield(L, 1, "data");			// arg to serialise
-	lua_call(L, 1, 1);
+	lua_pushboolean(L, 0);				// not pretty
+	lua_call(L, 2, 1);
 	if(!lua_isstring(L, -1)) {
 		fprintf(stderr, "AAARGGG\n");
 		goto err1;
@@ -719,7 +720,8 @@ static int do_reply(lua_State *L) {
 			lua_pop(L, 1);			// remove the field
 			lua_pushcfunction(L, serialise);
 			lua_getfield(L, 1, "data");			// arg to serialise
-			lua_call(L, 1, 1);
+			lua_pushboolean(L, 0);				// not pretty
+			lua_call(L, 2, 1);
 		}
 		// Now it really should be a string...
 		if(!lua_isstring(L, -1)) {
@@ -817,7 +819,8 @@ int write_table(lua_State *L) {
 	// should end up with a string.
 	lua_pushcfunction(L, serialise);
 	lua_pushvalue(L, 2);
-	lua_call(L, 1, 1);
+	lua_pushboolean(L, 1);				// pretty
+	lua_call(L, 2, 1);
 	if(!lua_isstring(L, -1)) {
 		fprintf(stderr, "AAARGGG\n");
 		goto err1;

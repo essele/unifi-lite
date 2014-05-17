@@ -321,8 +321,12 @@ int serialise(lua_State *L) {
 	struct charbuf 	*b = charbuf_new();
 	char			*s;
 	int				len;
+	int				indent = -1;
 
-	serialise_variable(L, 1, b, 0);
+	luaL_checktype(L, 2, LUA_TBOOLEAN);
+	if(lua_toboolean(L, 2) == 1) indent = 0;
+
+	serialise_variable(L, 1, b, indent);
 	s = charbuf_tostring(b, &len);
 	lua_pushlstring(L, s, len);
 	free(s);

@@ -20,6 +20,8 @@
 #define _SERIALISE_H
 
 #include <lua.h>
+#include <lauxlib.h>
+#include <lualib.h>
 
 int unserialise_variable(lua_State *L, char **str);
 int unserialise(lua_State *L);

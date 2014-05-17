@@ -35,29 +35,44 @@ default_key = "ba86f2bbe107c7c57eb5f2690775c712"
 
 -- prepare the initial response for new clients
 function handle_adopting(c)
+	local ap = registry.ap[c.mac]
+
 	print("IN ADOPING NOW")
 	print(c.data.model)
 	print(c.data.model_display)
 	if(c.data.cfgversion == "?") then
 		print("New Version Needed")
-		t = {}
+		local t = {}
+
+		-- first work out if we need a new authkey, basically if we don't
+		-- have one in the registry, or if we used a different one then we
+		-- regenerate
+		if(not ap.authkey or ap.authkey ~= c.used_authkey) then
+			ap.authkey = unisvr.gen_hex(16)
+		end
+
+		-- we create a config version for this initial config
+		-- ubnt seem to use just a random hex string, I'm not sure it's the
+		-- best approach since you could get a duplicate, but its very unlikely
+		ap.cfgversion = unisvr.gen_hex(8)
+
 		t._type = "setparam"
 		t.server_time_in_utc = unisvr.time()
 		unisvr.add_cfg(t, "mgmtcfg", "mgmt.is_default", "false");
-		unisvr.add_cfg(t, "mgmtcfg", "mgmt.authkey", "TODO");
-		unisvr.add_cfg(t, "mgmtcfg", "mgmt.cfgversion", "TODO");
+		unisvr.add_cfg(t, "mgmtcfg", "mgmt.authkey", ap.authkey);
+		unisvr.add_cfg(t, "mgmtcfg", "mgmt.cfgversion", ap.cfgversion);
 		unisvr.add_cfg(t, "mgmtcfg", "mgmt.servers.1.url", "TODO");
 		unisvr.add_cfg(t, "mgmtcfg", "mgmt.selfrun_guest_mode", "TODO");
 		unisvr.add_cfg(t, "mgmtcfg", "selfrun_guest_mode", "TODO");
 		unisvr.add_cfg(t, "mgmtcfg", "cfgversion", "TODO");
 		unisvr.add_cfg(t, "mgmtcfg", "led_enabled", "TODO");
-		unisvr.add_cfg(t, "mgmtcfg", "authkey", "TODO");
+		unisvr.add_cfg(t, "mgmtcfg", "authkey", ap.authkey);
 
 		c.data = t;
 		print("Enc: v="..tostring(v).."a="..tostring(a))
 
 		-- If authkey was provided, then we don't need the standalone "authkey" bit
-		print(unisvr.serialise(t))
+		print(unisvr.serialise(t, true))
 	end
 end
 
@@ -70,29 +85,31 @@ end
 -- When complete, it's (CONNECTED)
 
 function process_inform(c)
-	local auth_key
+	local authkey
 	print("Processing client: "..c.mac)
 
 	-- first we work out if we can decrypt the message if it's
 	-- encrypted
 	
 	if(c.encrypted) then
-		if(registry.ap[c.mac] and registry.ap[c.mac].auth_key) then
-			auth_key = registry.ap[c.mac].auth_key
-			local rc, err = unisvr.decrypt(c, auth_key)
+		if(registry.ap[c.mac] and registry.ap[c.mac].authkey) then
+			authkey = registry.ap[c.mac].authkey
+			local rc, err = unisvr.decrypt(c, authkey)
 			if(not rc) then
 				print("failed to decrypt using specified key, will try default")
 			end
 		end
 
 		if(not c.data) then
-			auth_key = "ba86f2bbe107c7c57eb5f2690775c712"	
-			local rc, err = unisvr.decrypt(c, auth_key)
+			authkey = "ba86f2bbe107c7c57eb5f2690775c712"	
+			local rc, err = unisvr.decrypt(c, authkey)
 			if(not rc) then
-				print("err is "..err);
+				print("err is "..err)
 				return 0
 			end
 		end
+
+		c.used_authkey = authkey
 	end
 
 	if(not registry.ap[c.mac]) then
@@ -109,8 +126,6 @@ function process_inform(c)
 	if(registry.ap[c.mac].state == "PENDING") then
 		c.status = 400
 		c.data = nil
-	-- FAKE FAKE FAKE
-		registry.ap[c.mac].state = "ADOPTING"
 		unisvr.reply(c)
 		return
 	end
@@ -126,7 +141,7 @@ function process_inform(c)
 		-- if we are encrypted then we need to encrypt the data
 		-- with the key we used to decrypt (not the new key)
 		if(c.encrypted) then
-			local rc, err = unisvr.encrypt(c, auth_key);
+			local rc, err = unisvr.encrypt(c, authkey);
 			if(not rc) then
 				print("err is "..err);
 				return 0
@@ -138,18 +153,44 @@ function process_inform(c)
 
 end
 
+-- 
+-- handle incoming admin requests.
+--
 
 function process_admin(c)
 	print("have admin message");
-	if(not c.data) then
-		print("malformed request")
-		c.data = {}
-		c.data.error = "malformed request"
-		unisvr.reply(c);
-		return 0
+
+	-- basic sanity check to ensure we could deserialise
+	-- the request
+	if(not c.data or not c.data.action) then
+		c.data = { error = "malformed request" }
+		goto done
 	end
 
-	print("action is "..(c.data.action))
+	-- the adopt action takes a mac address as an argument
+	if(c.data.action == "adopt") then
+		local mac = c.data.mac
+
+		if(not mac) then
+			c.data = { error = "expected mac address" }
+			goto done
+		end
+		if(not registry.ap[mac]) then
+			c.data = { error = "unknown ap" }
+			goto done
+		end
+		print("STATE is "..registry.ap[mac].state)
+		if(registry.ap[mac].state ~= "PENDING") then
+			c.data = { error = "ap not in PENDING state" }
+			goto done
+		end
+		registry.ap[mac].state = "ADOPTING"
+		c.data = { status = "ok" }
+	end
+
+::done::
+	unisvr.reply(c);
+	return 0
 end
 
 
