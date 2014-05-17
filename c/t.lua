@@ -69,7 +69,6 @@ function handle_adopting(c)
 		unisvr.add_cfg(t, "mgmtcfg", "authkey", ap.authkey);
 
 		c.data = t;
-		print("Enc: v="..tostring(v).."a="..tostring(a))
 
 		-- If authkey was provided, then we don't need the standalone "authkey" bit
 		print(unisvr.serialise(t, true))
@@ -169,7 +168,7 @@ function process_admin(c)
 
 	-- the adopt action takes a mac address as an argument
 	if(c.data.action == "adopt") then
-		local mac = c.data.mac
+		local mac = c.data.args[1]
 
 		if(not mac) then
 			c.data = { error = "expected mac address" }
@@ -186,6 +185,15 @@ function process_admin(c)
 		end
 		registry.ap[mac].state = "ADOPTING"
 		c.data = { status = "ok" }
+		goto done
+	end
+
+	if(c.data.action == "list-ap") then
+		c.data = { status = "ok", ap = {} }
+		for k,v in pairs(registry.ap) do
+			c.data.ap[k] = v;
+		end
+		goto done
 	end
 
 ::done::
@@ -200,7 +208,7 @@ end
 
 local c			-- the client/control message
 
-unisvr.init()
+unisvr.server_init()
 while(1) do
 	-- get an "inform" or a "control" message
 	c = unisvr.get_client()

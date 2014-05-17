@@ -52,6 +52,7 @@
 static char				HTTP_SEP[5] = { 0x0d, 0x0a, 0x0d, 0x0a, 0x00 };
 static char				INFORM_MAGIC[4] = { 'T', 'N', 'B', 'U' };
 static int				http_fd;				// socket for http listener
+static int				client_fd;				// for when we are the client
 
 /*
  * The header structure for an "inform" message
@@ -148,6 +149,98 @@ static int bind_listener(char *ip, int port) {
 err:
 	if(s >= 0) close(s);
 	return -1;
+}
+
+/*==============================================================================
+ * Connect to the server as a client. The model is simple for this we create
+ * a socket and connect to localhost. Then we need to send a serialised table
+ * close one end of the connection, then wait for the reply.
+ *==============================================================================
+ */
+int connect_client(int port) {
+	struct sockaddr_in	svr;
+	int					s;
+
+	s = socket(AF_INET, SOCK_STREAM, 0);
+	if(s < 0) {
+		fprintf(stderr, "%s: socket() failed: %s\n", __func__, strerror(errno));
+		goto err;
+	}
+	
+	memset(&svr, 0, sizeof(struct sockaddr_in));
+	svr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	svr.sin_port = htons(port);
+	svr.sin_family = AF_INET;
+
+	if(connect(s, (struct sockaddr *)&svr, sizeof(struct sockaddr_in)) < 0) {
+		fprintf(stderr, "%s: connect() failed: %s\n", __func__, strerror(errno));
+		goto err;
+	}
+	return s;
+
+err:
+	if(s >= 0) close(s);
+	return -1;
+}
+int client_write(lua_State *L) {
+	char		*p;
+	size_t		plen;
+	int			rc = 0;
+
+	luaL_checktype(L, 1, LUA_TTABLE);
+
+	// Serialise the table...	
+	lua_pushcfunction(L, serialise);
+	lua_pushvalue(L, 1);
+	lua_pushboolean(L, 0);				// not pretty
+	lua_call(L, 2, 1);
+	if(!lua_isstring(L, -1)) {
+		fprintf(stderr, "AAARGGG\n");
+		goto err1;
+	}
+	p = (char *)lua_tostring(L, -1);
+	plen = strlen(p);
+
+	if(write(client_fd, p, plen) != plen) {
+		fprintf(stderr, "%s: unable to write all data (%s)\n", __func__, strerror(errno));
+		close(client_fd);
+	}
+	// Close our write side, so the server knows we have finished
+	shutdown(client_fd, SHUT_WR);
+	rc = 1;		// all ok, return true
+
+err1:	lua_pop(L, 1);		// remove the returned string
+		lua_pushboolean(L, rc);
+		return 1;
+}
+
+int client_read(lua_State *L) {
+	char	*buf = NULL;
+	char	*p;
+	size_t	data_size = 0;
+	size_t	buf_size = 0;
+	size_t	space, len;
+
+	while(1) {
+		// Make sure we have some space to read into...
+		if(buf_size - data_size < 2048) {
+			buf = realloc(buf, buf_size + 8192);
+			buf_size += 8192;
+		}
+		space = buf_size - data_size;
+		len = read(client_fd, buf + data_size, space);
+		if(len == 0) break;
+		if(len < 0) {
+			fprintf(stderr, "Error reading: err=%d\n", errno);
+			lua_pushboolean(L, 0);
+			return 1;
+		}
+		data_size += len;
+	}
+	p = buf;
+	if(!unserialise_variable(L, &p)) lua_pushnil(L);
+	free(buf);
+	return 1;
 }
 
 /*------------------------------------------------------------------------------
@@ -560,11 +653,11 @@ err:	lua_pushboolean(L, 0);
 }
 
 /*==============================================================================
- * Initialise the module. Setup the client list, bind to the relevant port
+ * Initialise the server. Setup the client list, bind to the relevant port
  * and initialise the encryption library.
  *==============================================================================
  */
-static int init(lua_State *L) {
+static int server_init(lua_State *L) {
 
 	struct client *head = malloc(sizeof(struct client));
 	if(!head) {
@@ -582,7 +675,16 @@ static int init(lua_State *L) {
 	// Initialise SSL
 	init_encryption();
 
-	lua_pushnumber(L, 0);
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+static int client_init(lua_State *L) {
+	int rc = connect_client(2345);
+	
+	client_fd = rc;
+
+	lua_pushboolean(L, (rc < 0 ? 0 : 1));
 	return 1;
 }
 
@@ -826,7 +928,6 @@ int write_table(lua_State *L) {
 		goto err1;
 	}
 	p = (char *)lua_tostring(L, -1);
-	fprintf(stderr, "serialised: %s\n", p);
 	fname = (char *)lua_tostring(L, 1);
 	plen = strlen(p);
 
@@ -835,7 +936,7 @@ int write_table(lua_State *L) {
 		goto err1;
 	}
 	if(write(fd, p, plen) != plen) {
-		wlog(LOG_ERROR, "%s: unable to write all data(%s)", __func__);
+		wlog(LOG_ERROR, "%s: unable to write all data(%s)", __func__, strerror(errno));
 		close(fd);
 	}
 	close(fd);
@@ -895,7 +996,10 @@ err:	if(d) free(d);
  *==============================================================================
  */
 static const struct luaL_reg lib[] = {
-	{"init", init},
+	{"server_init", server_init},
+	{"client_init", client_init},
+	{"client_write", client_write},
+	{"client_read", client_read},
 	{"get_client", get_client},
 	{"reply", do_reply},
 	{"decrypt", do_decrypt},

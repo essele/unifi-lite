@@ -1,0 +1,77 @@
+#!../luajit
+
+package.cpath = "/home/essele/dev/unifi/c/?.so"
+
+u = package.loadlib("./unisvr.so", "luaopen_unisvr")()
+
+usage = {
+			["adopt"] = { 
+				args = 1, 
+				help = "adopt a PENDING access point", 
+				usage = "adopt <id>" 
+			},
+			["list-ap"] = { 
+				args = 0, 
+				help = "list all access points", 
+				usage = "list-ap",
+				action = "func_list_ap(data)"
+			}
+}
+
+-------------------------------------------------------------------------------
+-- List the access points
+-------------------------------------------------------------------------------
+function func_list_ap(data)
+	print(string.format("%-17.17s  %-15.15s  %-12.12s  %-14.14s  %s",
+								"ID (mac)", "IP Address", "Model",
+								"Version", "State"))
+	print(string.rep("-", 75))
+	for k,v in pairs(data.ap) do
+		print(string.format("%-17.17s  %-15.15s  %-12.12s  %-14.14s  %s",
+								k, v.inform.ip, v.inform.model_display, 
+								v.inform.version, v.state))
+	end
+end
+
+if(#arg == 0) then
+	print("Usage: "..arg[0].." <action> [arguments]")
+	print("")
+	print("Where <action> is one of:")
+	for k,v in pairs(usage) do
+		print("\t"..k.." - "..v.help)
+	end
+	return 1
+end
+
+action = usage[arg[1]]
+if(not action) then
+	print("AAAARRRGGG2")
+end
+
+if(#arg ~= action.args+1) then
+	print("Usage: "..arg[0].." "..action.usage)
+	return 1
+end
+
+if(not u.client_init()) then 	
+	return 1 
+end
+
+t = {}
+t.action = arg[1]
+t.args = {}
+
+local i = 1
+while(i <= action.args) do
+	t.args[i] = arg[i+1]
+	i=i+1
+end
+
+u.client_write(t);
+data = u.client_read()
+
+if(action.action) then
+	assert(loadstring(action.action))()
+end
+
+
