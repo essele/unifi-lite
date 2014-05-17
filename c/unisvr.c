@@ -31,15 +31,12 @@
 #include <ctype.h>
 #include <errno.h>
 #include <stdarg.h>
+#include <time.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-
-#include <openssl/conf.h>
-#include <openssl/evp.h>
-#include <openssl/err.h>
 
 #include "serialise.h"
 #include "utils.h"
@@ -89,6 +86,7 @@ struct client {
 	int				b_size;			// the buffer alloc'd size
 
 	// Saved fields for reference
+	int				is_admin;		// admin commands not client
 	int				status;			// for replying
 	uint32_t		data_length;
 	uint8_t			*data;
@@ -221,8 +219,10 @@ int read_client_data(struct client *c) {
 	b = c->buffer + c->complete;
 	n = read(c->fd, b, space);
 	if(n == 0) {
+		// eof -- for inform stuff is a problem since we were expecting data
+		//        for admin connections it signifies that we have everything
+		c->state = (c->is_admin ? 2 : 9);
 		fprintf(stderr, "EOF\n");
-		c->state = 9;					// discard client
 	} else if(n < 0) {
 		wlog(LOG_ERROR, "%s: read error on client: %s", __func__, strerror(errno));
 		c->state = 9;					// discard client
@@ -306,7 +306,7 @@ static int select_loop() {
 			// At this point we have some data, if we are state 0 then
 			// we need to look for the end of the header, we'll only do this up
 			// to 2k of data, if we don't have it by then it's a problem
-			if(c->state == 0) {
+			if(c->state == 0 && !c->is_admin) {
 				if(process_http_header(c) < 1) continue;
 			}
 			
@@ -353,7 +353,11 @@ static int select_loop() {
 		}
 		
 		c = new_client(fd);
-		// TODO: if peer is localhost, then we process differently
+		// See if we are coming from "localhost" then we will process
+		// as an admin command
+		fprintf(stderr, "ADDR: %x\n", peer.sin_addr.s_addr);
+		if(ntohl(peer.sin_addr.s_addr) == INADDR_LOOPBACK) c->is_admin = 1;
+
 		c->state = 0;
 	}
 	return 1;
@@ -433,7 +437,8 @@ int unhex(char *string, uint8_t *buf, int max) {
 
 
 /*==============================================================================
- * Provide our service data for the unit_service module
+ * Decrypt the data, unserialise and then populate the "data" element
+ * Encrypt -- serialise "data", then encrypt and put back in "data" element
  *
  * decrypt(table, key)
  * encrypt(table, key)
@@ -554,7 +559,8 @@ err:	lua_pushboolean(L, 0);
 }
 
 /*==============================================================================
- * Provide our service data for the unit_service module
+ * Initialise the module. Setup the client list, bind to the relevant port
+ * and initialise the encryption library.
  *==============================================================================
  */
 static int init(lua_State *L) {
@@ -567,7 +573,7 @@ static int init(lua_State *L) {
 	head->next = NULL;
 	clients = head;
 
-	int rc = bind_listener("127.0.0.1", 2345);
+	int rc = bind_listener("0.0.0.0", 2345);
 	fprintf(stderr, "rc=%d\n", rc);
 
 	http_fd = rc;
@@ -579,12 +585,21 @@ static int init(lua_State *L) {
 	return 1;
 }
 
+/*==============================================================================
+ * Find a client on the list that is ready for lua to process, if there aren't
+ * any then we call select to wait for connections/data.
+ *
+ * If we find a client then we populate a table with all the relevant data
+ * and return it.
+ *==============================================================================
+ */
 #define TABLE(f, t, v...) 	lua_pushstring(L, f); \
 							lua_push##t(L, v); \
 							lua_settable(L, -3)
 
 static int get_client(lua_State *L) {
 	struct client 	*c;
+	char			*data = NULL;
 	char			mac[18];
 
 	do {
@@ -594,42 +609,47 @@ static int get_client(lua_State *L) {
 		select_loop();
 	} while(1);
 
-	// TODO: here we need to create a table populated with the main
-	//       header fields and he data
-	
-	struct inform	*hdr = (struct inform *)c->buffer;
-	int				flags = ntohs(hdr->flags);
-
-	// Keep some useful fields handy...
-	c->data_length = ntohl(hdr->data_length);
-	c->data = (uint8_t *)(hdr+1);
-	memcpy(c->iv, hdr->iv, 16);
-	memcpy(c->mac, hdr->mac, 6);
-
-	// Put the mac address into a standard format...
-	sprintf(mac, "%02x:%02x:%02x:%02x:%02x:%02x", hdr->mac[0], hdr->mac[1],
-					hdr->mac[2], hdr->mac[3], hdr->mac[4], hdr->mac[5]);
+	// If we are a proper client then we keep some useful data in the
+	// client structure and populate the returning table.
+	// For admin connections it's much simpler
 
 	lua_newtable(L);
-	
-	TABLE("magic", lstring, hdr->magic, 4);
-	TABLE("version", number, ntohl(hdr->version));
-	TABLE("mac", string, mac);
-	TABLE("encrypted", boolean, (flags&1) ? 1 : 0);
-	TABLE("compressed", boolean, (flags&2) ? 1 : 0);
-	TABLE("iv", string, hex(hdr->iv, 16));
-	TABLE("dataversion", number, ntohl(hdr->data_version));
-	TABLE("datalength", number, c->data_length);
-	TABLE("inform", boolean, 1);
 	TABLE("_ref", lightuserdata, (void *)c);
+	if(c->is_admin) {
+		data = c->buffer;
+		TABLE("admin", boolean, 1);
+	} else {
+		struct inform	*hdr = (struct inform *)c->buffer;
+		int				flags = ntohs(hdr->flags);
 
-	// TODO: deal with compression
+		// Keep some useful fields handy...
+		c->data_length = ntohl(hdr->data_length);
+		c->data = (uint8_t *)(hdr+1);
+		memcpy(c->iv, hdr->iv, 16);
+		memcpy(c->mac, hdr->mac, 6);
 
-	// We only unserialise the data here if it's not encrypted, if we
-	// can't unserialise then we'll clear the data field (nil)
-	if((flags&1) == 0) {
-		char *data = (char *)(hdr+1);
+		// Put the mac address into a standard format...
+		sprintf(mac, "%02x:%02x:%02x:%02x:%02x:%02x", hdr->mac[0], hdr->mac[1],
+						hdr->mac[2], hdr->mac[3], hdr->mac[4], hdr->mac[5]);
 
+	
+		TABLE("magic", lstring, hdr->magic, 4);
+		TABLE("version", number, ntohl(hdr->version));
+		TABLE("mac", string, mac);
+		TABLE("encrypted", boolean, (flags&1) ? 1 : 0);
+		TABLE("compressed", boolean, (flags&2) ? 1 : 0);
+		TABLE("iv", string, hex(hdr->iv, 16));
+		TABLE("dataversion", number, ntohl(hdr->data_version));
+		TABLE("datalength", number, c->data_length);
+		TABLE("inform", boolean, 1);
+
+		// TODO: deal with compression
+
+		// We only unserialise the data here if it's not encrypted, if we
+		// can't unserialise then we'll clear the data field (nil)
+		if((flags&1) == 0) data = (char *)(hdr+1);
+	}
+	if(data) {
 		lua_pushstring(L, "data");
 		if(!unserialise_variable(L, &data)) lua_pushnil(L);
 		lua_settable(L, -3);
@@ -687,14 +707,6 @@ static int do_reply(lua_State *L) {
 	c = (struct client *)lua_topointer(L, -1);
 	lua_pop(L, 1);
 
-	// Pull out specific values from the table into the header
-	lua_getfield(L, 1, "status");
-	c->status = lua_tonumber(L, -1);
-	lua_pop(L, 1);
-	lua_getfield(L, 1, "encrypted");
-	if(lua_isboolean(L, -1)) encrypted = lua_toboolean(L, -1);
-	lua_pop(L, 1);
-
 	// We will be sending "data", if it's null then we are zero length,
 	// if it's a string then we send it (probably encrypted), if it's
 	// anything else we serialise.
@@ -721,7 +733,21 @@ static int do_reply(lua_State *L) {
 	// Now clear our data so we start building the buffer
 	// from scratch (b_size is still correct though)
 	c->expected = 0;
-	
+
+	// Handle the admin case, it's simply a return of the data
+	if(c->is_admin) {
+		add_reply_string(c, data, len);
+		goto fin;
+	}	
+
+	// Pull out specific values from the table into the header
+	lua_getfield(L, 1, "status");
+	c->status = lua_tonumber(L, -1);
+	lua_pop(L, 1);
+	lua_getfield(L, 1, "encrypted");
+	if(lua_isboolean(L, -1)) encrypted = lua_toboolean(L, -1);
+	lua_pop(L, 1);
+
 	// Now formulate a payload, start with preparing the date...
 	t = time(NULL);
 	tmp = localtime(&t);
@@ -740,9 +766,8 @@ static int do_reply(lua_State *L) {
 	// Close the main header
 	add_reply_string(c, HTTP_SEP, 0);
 
-	// Now the data ... if we have it ...
+	// If we have data build a header and write the data
 	if(len) {
-		// First we need a header
 		struct inform	hdr;
 
 		memcpy(hdr.magic, INFORM_MAGIC, 4);
@@ -757,19 +782,19 @@ static int do_reply(lua_State *L) {
 		add_reply_string(c, data, len);
 	}
 
-	// Remove our data item (or nil) from the stack
-	lua_pop(L, 1);
+fin:	// Remove our data item (or nil) from the stack
+		lua_pop(L, 1);
 
-	// Now mark as ready to send...
-	c->complete = 0;
-	c->state = 4;
+		// Now mark as ready to send...
+		c->complete = 0;
+		c->state = 4;
 
-	lua_pushboolean(L, 1);
-	return 1;	
+		lua_pushboolean(L, 1);
+		return 1;	
 
-err1: lua_pop(L, 1);
-	  lua_pushboolean(L, 0);
-	  return 1;
+err1: 	lua_pop(L, 1);
+		lua_pushboolean(L, 0);
+		return 1;
 }
 
 /*==============================================================================

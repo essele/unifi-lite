@@ -54,7 +54,6 @@ function handle_adopting(c)
 		unisvr.add_cfg(t, "mgmtcfg", "authkey", "TODO");
 
 		c.data = t;
-		v,a = unisvr.encrypt(c, default_key);
 		print("Enc: v="..tostring(v).."a="..tostring(a))
 
 		-- If authkey was provided, then we don't need the standalone "authkey" bit
@@ -71,6 +70,7 @@ end
 -- When complete, it's (CONNECTED)
 
 function process_inform(c)
+	local auth_key
 	print("Processing client: "..c.mac)
 
 	-- first we work out if we can decrypt the message if it's
@@ -78,15 +78,16 @@ function process_inform(c)
 	
 	if(c.encrypted) then
 		if(registry.ap[c.mac] and registry.ap[c.mac].auth_key) then
-			print("have key for client")
-			local rc, err = unisvr.decrypt(c, registry.ap[c.mac].auth_key)
+			auth_key = registry.ap[c.mac].auth_key
+			local rc, err = unisvr.decrypt(c, auth_key)
 			if(not rc) then
 				print("failed to decrypt using specified key, will try default")
 			end
 		end
 
 		if(not c.data) then
-			local rc, err = unisvr.decrypt(c, "ba86f2bbe107c7c57eb5f2690775c712")
+			auth_key = "ba86f2bbe107c7c57eb5f2690775c712"	
+			local rc, err = unisvr.decrypt(c, auth_key)
 			if(not rc) then
 				print("err is "..err);
 				return 0
@@ -96,7 +97,7 @@ function process_inform(c)
 
 	if(not registry.ap[c.mac]) then
 		-- this is the completely unknown case, we simply mark
-		-- the client as pending.
+		-- the client as pending and drop through...
 		registry.ap[c.mac] = {}
 		registry.ap[c.mac].state = "PENDING"
 		registry.ap[c.mac].inform = c.data
@@ -119,16 +120,37 @@ function process_inform(c)
 	-- config then we set some defaults and reply. Otherwise we
 	-- start provisioning
 	if(registry.ap[c.mac].state == "ADOPTING") then
-		print("enc="..tostring(c.encrypted))
 		handle_adopting(c)
-		print("enc="..tostring(c.encrypted))
 		c.status = 200;
+
+		-- if we are encrypted then we need to encrypt the data
+		-- with the key we used to decrypt (not the new key)
+		if(c.encrypted) then
+			local rc, err = unisvr.encrypt(c, auth_key);
+			if(not rc) then
+				print("err is "..err);
+				return 0
+			end
+		end
 		unisvr.reply(c)
 		return
 	end
 
 end
 
+
+function process_admin(c)
+	print("have admin message");
+	if(not c.data) then
+		print("malformed request")
+		c.data = {}
+		c.data.error = "malformed request"
+		unisvr.reply(c);
+		return 0
+	end
+
+	print("action is "..(c.data.action))
+end
 
 
 -- this is the main loop that sits waiting for network connections.
@@ -145,6 +167,8 @@ while(1) do
 	-- process the message
 	if(c.inform) then
 		process_inform(c)
+	elseif(c.admin) then
+		process_admin(c)
 	else
 		print("unknown message")
 	end
