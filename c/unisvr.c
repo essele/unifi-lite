@@ -43,25 +43,18 @@
 
 #include "serialise.h"
 #include "utils.h"
+#include "encryption.h"
+#include "log.h"
 
 /*==============================================================================
  * Globals (local to this module)
  *==============================================================================
  */
 #define BACKLOG			128						// max outstanding connections
-#define LOG_FILE		"./x.log"				// for logging issues
-
-#define LOG_FATAL		0
-#define LOG_ERROR		1
-#define LOG_WARN		2
-#define LOG_INFO		3
-#define LOG_DEBUG		4
 
 static char				HTTP_SEP[5] = { 0x0d, 0x0a, 0x0d, 0x0a, 0x00 };
 static char				INFORM_MAGIC[4] = { 'T', 'N', 'B', 'U' };
 static int				http_fd;				// socket for http listener
-static FILE				*logf;					// fh for log file
-static int				log_level = LOG_INFO;	// default logging level
 
 /*
  * The header structure for an "inform" message
@@ -105,39 +98,6 @@ struct client {
 
 struct client 		*clients;
 
-/*==============================================================================
- * Write stuff into our log file, we have a level and only write stuff that is
- * less than or equal the level
- *==============================================================================
- */
-char	*log_levels[5] = { "FATAL:", "ERROR:", "WARN:", "INFO:", "DEBUG:" };
-static void wlog(int level, char *fmt, ...) {
-	va_list 	ap;
-	char		tstr[30];
-	time_t		t;
-	struct tm	*tmp;
-
-	// Sanity on the log_level...	
-	if(level > log_level) return;
-	if(level < 0 || level > 4) level = LOG_ERROR;
-
-	// Inclue the time format...
-	t = time(NULL);
-	tmp = localtime(&t);
-	if(tmp == NULL) {
-		sprintf(tstr, "--unknown--");
-	} else {
-		strftime(tstr, sizeof(tstr), "%b %d %T", tmp);
-	}
-
-	// Output...
-	va_start(ap, fmt);
-	fprintf(logf, "%s  %-6.6s ", tstr, log_levels[level]);
-	vfprintf(logf, fmt, ap);
-	fprintf(logf, "\n");
-	fflush(logf);
-}
- 
 /*==============================================================================
  * Open our socket, set the settings, and return the fd for the HTTP listener
  *==============================================================================
@@ -472,96 +432,6 @@ int unhex(char *string, uint8_t *buf, int max) {
 }
 
 
-/*------------------------------------------------------------------------------
- * Initialise the OpenSSL library ready for future encryption/decryption needs
- *------------------------------------------------------------------------------
- */
-int init_ssl() {
-	ERR_load_crypto_strings();
-	OpenSSL_add_all_algorithms();
-	OPENSSL_config(NULL);
-
-	return 0;
-}
-
-char *decrypt(struct client *c, unsigned char *key, uint8_t *data, int len) {
-	int 				tlen, olen;
-	unsigned char		*plain = malloc(len+1);
-	unsigned char		*iv = c->iv;
-	unsigned long		err;
-	EVP_CIPHER_CTX		*ctx;
-
-	if(!plain) goto err;
-	if(!(ctx = EVP_CIPHER_CTX_new())) {
-		wlog(LOG_ERROR, "%s: EVP_CIPHER_CTX_new() failed", __func__);
-		goto err;
-	}
-	if(EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv) != 1) {
-		wlog(LOG_ERROR, "%s: EVP_DecryptInit_ex() failed", __func__);
-		goto err;
-	}
-	if(EVP_DecryptUpdate(ctx, plain, &tlen, data, len) != 1) {
-		wlog(LOG_ERROR, "%s: EVP_DecryptUpdate() failed", __func__);
-		goto err;
-	}
-	olen = tlen;
-	if(EVP_DecryptFinal(ctx, plain+tlen, &tlen) != 1) {
-		wlog(LOG_ERROR, "%s: EVP_DecryptFinal() failed", __func__);
-		goto err;
-	}
-	olen += tlen;
-	plain[olen] = '\0';
-	EVP_CIPHER_CTX_free(ctx);
-	return (char *)plain;
-
-err:
-	while((err = ERR_get_error())) {
-		wlog(LOG_ERROR, "%s: SSL Error: %s", __func__, ERR_error_string(err, NULL));
-	}
-	if(ctx) EVP_CIPHER_CTX_free(ctx);
-	if(plain) free(plain);
-	return NULL;
-}
-
-char *encrypt(struct client *c, unsigned char *key, char *plain, int *len) {
-	int 				tlen, olen;
-	unsigned char		*crypt = malloc(*len + 64);		// allow for block
-	unsigned char		*iv = c->iv;
-	unsigned long		err;
-	EVP_CIPHER_CTX		*ctx;
-
-	if(!crypt) goto err;
-	if(!(ctx = EVP_CIPHER_CTX_new())) {
-		wlog(LOG_ERROR, "%s: EVP_CIPHER_CTX_new() failed", __func__);
-		goto err;
-	}
-	if(EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv) != 1) {
-		wlog(LOG_ERROR, "%s: EVP_EncryptInit_ex() failed", __func__);
-		goto err;
-	}
-	if(EVP_EncryptUpdate(ctx, crypt, &tlen, (unsigned char *)plain, *len) != 1) {
-		wlog(LOG_ERROR, "%s: EVP_EncryptUpdate() failed", __func__);
-		goto err;
-	}
-	olen = tlen;
-	if(EVP_EncryptFinal(ctx, crypt+tlen, &tlen) != 1) {
-		wlog(LOG_ERROR, "%s: EVP_EncryptFinal() failed", __func__);
-		goto err;
-	}
-	olen += tlen;
-	*len = olen;
-	EVP_CIPHER_CTX_free(ctx);
-	return (char *)crypt;
-
-err:
-	while((err = ERR_get_error())) {
-		wlog(LOG_ERROR, "%s: SSL Error: %s", __func__, ERR_error_string(err, NULL));
-	}
-	if(ctx) EVP_CIPHER_CTX_free(ctx);
-	if(crypt) free(crypt);
-	return NULL;
-}
-
 /*==============================================================================
  * Provide our service data for the unit_service module
  *
@@ -598,7 +468,7 @@ static int do_decrypt(lua_State *L) {
 	}
 
 	// Decrypt the data
-	data = decrypt(c, key, c->data, c->data_length);
+	data = decrypt(key, c->iv, c->data, c->data_length);
 	if(!data) {
 		err = "unable to decrypt";
 		goto err;
@@ -661,7 +531,7 @@ static int do_encrypt(lua_State *L) {
 	plen = strlen(p);
 
 	// Encrypt the data
-	data = encrypt(c, key, p, &plen);
+	data = encrypt(key, c->iv, p, &plen);
 	lua_pop(L, 1);						// remove serialised string
 	if(!data) {
 		err = "unable to decrypt";
@@ -703,7 +573,7 @@ static int init(lua_State *L) {
 	http_fd = rc;
 
 	// Initialise SSL
-	init_ssl();
+	init_encryption();
 
 	lua_pushnumber(L, 0);
 	return 1;
@@ -1021,11 +891,7 @@ int luaopen_unisvr(lua_State *L) {
 	// Initialise the module...
 	luaL_openlib(L, "unisvr", lib, 0);
 
-	if(!(logf = fopen(LOG_FILE, "a"))) {
-		fprintf(stderr, "WARNING: unable to open log file (%s): %s\n", LOG_FILE, strerror(errno));
-	}
-	wlog(LOG_WARN, "starting.");
-
+	init_log();
 	return 1;
 }
 
