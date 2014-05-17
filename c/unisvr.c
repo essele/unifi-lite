@@ -58,6 +58,7 @@
 #define LOG_DEBUG		4
 
 static char				HTTP_SEP[5] = { 0x0d, 0x0a, 0x0d, 0x0a, 0x00 };
+static char				INFORM_MAGIC[4] = { 'T', 'N', 'B', 'U' };
 static int				http_fd;				// socket for http listener
 static FILE				*logf;					// fh for log file
 static int				log_level = LOG_INFO;	// default logging level
@@ -73,7 +74,7 @@ struct inform {
 	uint8_t			iv[16];
 	uint32_t		data_version;
 	uint32_t		data_length;
-	uint8_t			data[1];
+//	uint8_t			data[1];
 };
 
 /*
@@ -95,8 +96,10 @@ struct client {
 	int				b_size;			// the buffer alloc'd size
 
 	// Saved fields for reference
+	int				status;			// for replying
 	uint32_t		data_length;
 	uint8_t			*data;
+	uint8_t			mac[6];
 	uint8_t			iv[16];
 };
 
@@ -285,6 +288,7 @@ int process_http_header(struct client *c) {
 			return -1;
 		}
 		i += 4;				// get past the text
+		fprintf(stderr, "completed=%d i=%d cl=%d\n", c->complete, i, cl);
 		c->complete -= i;
 		memmove(c->buffer, c->buffer+i, c->complete);
 		c->expected = cl;
@@ -354,10 +358,13 @@ static int select_loop() {
 					c->state = 2;
 				}
 			}
-		} else if(FD_ISSET(c->fd, &fd_w)) {
+		}
+		if(FD_ISSET(c->fd, &fd_w)) {
+			fprintf(stderr, "Write for client %p\n", c);
 			// We are ready to write...
 			int togo = c->expected - c->complete;
 			int len = write(c->fd, c->buffer+c->complete, togo);
+			fprintf(stderr, "write=%d togo=%d\n", len, togo);
 			if(len < 0) {
 				wlog(LOG_ERROR, "%s: write error on client: %s", __func__, strerror(errno));
 				c->state = 9;
@@ -409,6 +416,7 @@ struct client *clean_and_find_ready() {
 		}
 		// Remove any in state 9
 		if(c->next->state == 9) {
+			fprintf(stderr, "freeing client %p\n", c->next);
 			d = c->next;
 			if(d->buffer) free(d->buffer);
 			close(d->fd);
@@ -476,10 +484,9 @@ int init_ssl() {
 	return 0;
 }
 
-char *decrypt(struct client *c, unsigned char *key) {
-	int 				ilen = c->data_length;
+char *decrypt(struct client *c, unsigned char *key, uint8_t *data, int len) {
 	int 				tlen, olen;
-	unsigned char		*plain = malloc(ilen+1);
+	unsigned char		*plain = malloc(len+1);
 	unsigned char		*iv = c->iv;
 	unsigned long		err;
 	EVP_CIPHER_CTX		*ctx;
@@ -493,7 +500,7 @@ char *decrypt(struct client *c, unsigned char *key) {
 		wlog(LOG_ERROR, "%s: EVP_DecryptInit_ex() failed", __func__);
 		goto err;
 	}
-	if(EVP_DecryptUpdate(ctx, plain, &tlen, c->data, ilen) != 1) {
+	if(EVP_DecryptUpdate(ctx, plain, &tlen, data, len) != 1) {
 		wlog(LOG_ERROR, "%s: EVP_DecryptUpdate() failed", __func__);
 		goto err;
 	}
@@ -515,10 +522,51 @@ err:
 	if(plain) free(plain);
 	return NULL;
 }
+
+char *encrypt(struct client *c, unsigned char *key, char *plain, int *len) {
+	int 				tlen, olen;
+	unsigned char		*crypt = malloc(*len + 64);		// allow for block
+	unsigned char		*iv = c->iv;
+	unsigned long		err;
+	EVP_CIPHER_CTX		*ctx;
+
+	if(!crypt) goto err;
+	if(!(ctx = EVP_CIPHER_CTX_new())) {
+		wlog(LOG_ERROR, "%s: EVP_CIPHER_CTX_new() failed", __func__);
+		goto err;
+	}
+	if(EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv) != 1) {
+		wlog(LOG_ERROR, "%s: EVP_EncryptInit_ex() failed", __func__);
+		goto err;
+	}
+	if(EVP_EncryptUpdate(ctx, crypt, &tlen, (unsigned char *)plain, *len) != 1) {
+		wlog(LOG_ERROR, "%s: EVP_EncryptUpdate() failed", __func__);
+		goto err;
+	}
+	olen = tlen;
+	if(EVP_EncryptFinal(ctx, crypt+tlen, &tlen) != 1) {
+		wlog(LOG_ERROR, "%s: EVP_EncryptFinal() failed", __func__);
+		goto err;
+	}
+	olen += tlen;
+	*len = olen;
+	EVP_CIPHER_CTX_free(ctx);
+	return (char *)crypt;
+
+err:
+	while((err = ERR_get_error())) {
+		wlog(LOG_ERROR, "%s: SSL Error: %s", __func__, ERR_error_string(err, NULL));
+	}
+	if(ctx) EVP_CIPHER_CTX_free(ctx);
+	if(crypt) free(crypt);
+	return NULL;
+}
+
 /*==============================================================================
  * Provide our service data for the unit_service module
  *
  * decrypt(table, key)
+ * encrypt(table, key)
  *==============================================================================
  */
 static int do_decrypt(lua_State *L) {
@@ -540,6 +588,7 @@ static int do_decrypt(lua_State *L) {
 		goto err1;
 	}
 	c = (struct client *)lua_topointer(L, -1);
+	lua_pop(L, 1);
 
 	// Build the key...
 	p = (char *)lua_tostring(L, 2);
@@ -549,7 +598,7 @@ static int do_decrypt(lua_State *L) {
 	}
 
 	// Decrypt the data
-	data = decrypt(c, key);
+	data = decrypt(c, key, c->data, c->data_length);
 	if(!data) {
 		err = "unable to decrypt";
 		goto err;
@@ -562,6 +611,66 @@ static int do_decrypt(lua_State *L) {
 		err = "unable to decode data";
 		goto err1;
 	}
+	lua_settable(L, 1);
+	free(data);
+
+	lua_pushboolean(L, 1);	
+	return 1;
+
+err1:	lua_pop(L, 1);
+err:	lua_pushboolean(L, 0);
+		lua_pushstring(L, err);
+		return 2;
+}
+
+static int do_encrypt(lua_State *L) {
+	struct client 	*c;
+	char			*data, *p;
+	uint8_t			key[17];
+	char			*err;
+	int				plen;
+
+	luaL_checktype(L, 1, LUA_TTABLE);
+	luaL_checktype(L, 2, LUA_TSTRING);
+
+	// Get the client reference...
+	lua_getfield(L, 1, "_ref");
+	if(!lua_islightuserdata(L, -1)) {
+		err = "invalid table, no client reference";
+		goto err1;
+	}
+	c = (struct client *)lua_topointer(L, -1);
+	lua_pop(L, 1);
+
+	// Build the key...
+	p = (char *)lua_tostring(L, 2);
+	if(strlen(p) != 32 || unhex(p, key, 16) != 16) {
+		err = "invalid key - expect 16 hex digits";
+		goto err;
+	}
+
+	// Serialise the data
+	lua_pushcfunction(L, serialise);
+	lua_getfield(L, 1, "data");			// arg to serialise
+	lua_call(L, 1, 1);
+	if(!lua_isstring(L, -1)) {
+		fprintf(stderr, "AAARGGG\n");
+		goto err1;
+	}
+	p = (char *)lua_tostring(L, -1);
+	plen = strlen(p);
+
+	// Encrypt the data
+	data = encrypt(c, key, p, &plen);
+	lua_pop(L, 1);						// remove serialised string
+	if(!data) {
+		err = "unable to decrypt";
+		goto err;
+	}
+
+	// Now put the encrypted data into the table
+	lua_pushstring(L, "data");
+	lua_pushlstring(L, data, plen);
 	lua_settable(L, 1);
 	free(data);
 
@@ -623,8 +732,9 @@ static int get_client(lua_State *L) {
 
 	// Keep some useful fields handy...
 	c->data_length = ntohl(hdr->data_length);
-	c->data = hdr->data;
+	c->data = (uint8_t *)(hdr+1);
 	memcpy(c->iv, hdr->iv, 16);
+	memcpy(c->mac, hdr->mac, 6);
 
 	// Put the mac address into a standard format...
 	sprintf(mac, "%02x:%02x:%02x:%02x:%02x:%02x", hdr->mac[0], hdr->mac[1],
@@ -635,8 +745,8 @@ static int get_client(lua_State *L) {
 	TABLE("magic", lstring, hdr->magic, 4);
 	TABLE("version", number, ntohl(hdr->version));
 	TABLE("mac", string, mac);
-	TABLE("encrypted", number, (flags&1) ? 1 : 0);
-	TABLE("compressed", number, (flags&2) ? 1 : 0);
+	TABLE("encrypted", boolean, (flags&1) ? 1 : 0);
+	TABLE("compressed", boolean, (flags&2) ? 1 : 0);
 	TABLE("iv", string, hex(hdr->iv, 16));
 	TABLE("dataversion", number, ntohl(hdr->data_version));
 	TABLE("datalength", number, c->data_length);
@@ -648,7 +758,7 @@ static int get_client(lua_State *L) {
 	// We only unserialise the data here if it's not encrypted, if we
 	// can't unserialise then we'll clear the data field (nil)
 	if((flags&1) == 0) {
-		char *data = (char *)hdr->data;
+		char *data = (char *)(hdr+1);
 
 		lua_pushstring(L, "data");
 		if(!unserialise_variable(L, &data)) lua_pushnil(L);
@@ -656,14 +766,150 @@ static int get_client(lua_State *L) {
 	}
 	return 1;
 }
+
+/*==============================================================================
+ * We take a client table (including _ref) and form an http reply which we send
+ * back on the socket (by scheduling for the select_loop)
+ *==============================================================================
+ */
+static void add_reply_string(struct client *c, char *str, int l) {
+	int space = c->b_size - c->expected;
+
+	if(l==0) l = strlen(str);
+	if(space < l) {
+		c->buffer = realloc(c->buffer, c->b_size + l + 2048);
+		c->b_size += l + 2048;
+	}
+	memcpy(c->buffer + c->expected, str, l);
+	c->expected += l;
+}
+
+static char http_400[] = "Bad Request";
+static char http_200[] = "OK";
+static char http_UNK[] = "Unknown";
+
+static char *http_code(int status) {
+	switch(status) {
+	case 200:	return http_200;
+	case 400:	return http_400;
+	default:	return http_UNK;
+	}
+}
+
+static int do_reply(lua_State *L) {
+	struct client	*c;
+	time_t			t;
+	struct tm		*tmp;
+	char			line[256];
+	char			date[128];
+	char			*data = NULL;
+	size_t			len, content_len;
+	int				encrypted = 0;
+
+	luaL_checktype(L, 1, LUA_TTABLE);
+
+	// Get the client reference...
+	lua_getfield(L, 1, "_ref");
+	if(!lua_islightuserdata(L, -1)) {
+//		err = "invalid table, no client reference";
+		goto err1;
+	}
+	c = (struct client *)lua_topointer(L, -1);
+	lua_pop(L, 1);
+
+	// Pull out specific values from the table into the header
+	lua_getfield(L, 1, "status");
+	c->status = lua_tonumber(L, -1);
+	lua_pop(L, 1);
+	lua_getfield(L, 1, "encrypted");
+	if(lua_isboolean(L, -1)) encrypted = lua_toboolean(L, -1);
+	lua_pop(L, 1);
+
+	// We will be sending "data", if it's null then we are zero length,
+	// if it's a string then we send it (probably encrypted), if it's
+	// anything else we serialise.
+	lua_getfield(L, 1, "data");
+	if(lua_isnil(L, -1)) {
+		len = 0;
+	} else {
+		// If it's not a string then we serialise
+		if(!lua_isstring(L, -1)) {
+			lua_pop(L, 1);			// remove the field
+			lua_pushcfunction(L, serialise);
+			lua_getfield(L, 1, "data");			// arg to serialise
+			lua_call(L, 1, 1);
+		}
+		// Now it really should be a string...
+		if(!lua_isstring(L, -1)) {
+			fprintf(stderr, "AAARGGG\n");
+			goto err1;
+		}
+		data = (char *)lua_tolstring(L, -1, &len);
+	}
+	// At this point we have one extra item on the stack to remove later
+
+	// Now clear our data so we start building the buffer
+	// from scratch (b_size is still correct though)
+	c->expected = 0;
+	
+	// Now formulate a payload, start with preparing the date...
+	t = time(NULL);
+	tmp = localtime(&t);
+	strftime(date, sizeof(date), "%a, %d %b %Y %H:%M:%S %Z", tmp);
+
+	// Now the initial response...
+	content_len = (len ? len + sizeof(struct inform) : 0);
+	snprintf(line, sizeof(line), "HTTP/1.1 %03d %s\nContent-Length: %d\n",
+						c->status, http_code(c->status), (int)content_len);
+	add_reply_string(c, line, 0);
+	
+	// Secondary data...
+	snprintf(line, sizeof(line), "Date: %s\nConnection: close", date);
+	add_reply_string(c, line, 0);
+	
+	// Close the main header
+	add_reply_string(c, HTTP_SEP, 0);
+
+	// Now the data ... if we have it ...
+	if(len) {
+		// First we need a header
+		struct inform	hdr;
+
+		memcpy(hdr.magic, INFORM_MAGIC, 4);
+		hdr.version = htonl(0);
+		memcpy(hdr.mac, c->mac, 6);
+		hdr.flags = htons(encrypted);				// TODO: compressed
+		memcpy(hdr.iv, c->iv, 16);
+		hdr.data_version = htonl(1);
+		hdr.data_length = htonl(len);
+	
+		add_reply_string(c, (char *)&hdr, sizeof(struct inform));
+		add_reply_string(c, data, len);
+	}
+
+	// Remove our data item (or nil) from the stack
+	lua_pop(L, 1);
+
+	// Now mark as ready to send...
+	c->complete = 0;
+	c->state = 4;
+
+	lua_pushboolean(L, 1);
+	return 1;	
+
+err1: lua_pop(L, 1);
+	  lua_pushboolean(L, 0);
+	  return 1;
+}
+
 /*==============================================================================
  * Given a table (data) we will serialise (in pretty format) and then write
  * it out to the named file.
  *
- * write_data(table, filename)
+ * write_table(table, filename)
  *==============================================================================
  */
-int write_data(lua_State *L) {
+int write_table(lua_State *L) {
 	char	*p;
 	char	*fname;
 	int		fd, plen;
@@ -672,12 +918,14 @@ int write_data(lua_State *L) {
 	luaL_checktype(L, 1, LUA_TSTRING);
 	luaL_checktype(L, 2, LUA_TTABLE);
 
-	// We'll use the lua stack to serialise the table, so we should end
-	// up with a string on the top. The table will be on the top...
-	luaL_checktype(L, -1, LUA_TTABLE);
-	if(serialise(L) != 1) {
+	// We'll call our lua "serialise" c function, so push the arg then we
+	// should end up with a string.
+	lua_pushcfunction(L, serialise);
+	lua_pushvalue(L, 2);
+	lua_call(L, 1, 1);
+	if(!lua_isstring(L, -1)) {
 		fprintf(stderr, "AAARGGG\n");
-		goto err;
+		goto err1;
 	}
 	p = (char *)lua_tostring(L, -1);
 	fprintf(stderr, "serialised: %s\n", p);
@@ -696,7 +944,7 @@ int write_data(lua_State *L) {
 	rc = 1;		// all ok, return true
 
 err1:	lua_pop(L, 1);		// remove the returned string
-err:	lua_pushboolean(L, rc);
+		lua_pushboolean(L, rc);
 		return 1;
 }
 
@@ -704,10 +952,10 @@ err:	lua_pushboolean(L, rc);
  * Read a given filename, unserialise the data, and return the resulting value
  * (which is probably a table)
  *
- * read_data(filename)
+ * read_table(filename)
  *==============================================================================
  */
-int read_data(lua_State *L) {
+int read_table(lua_State *L) {
 	int		fd;
 	char	*d = NULL, *fname;
 	off_t	len;
@@ -751,9 +999,11 @@ err:	if(d) free(d);
 static const struct luaL_reg lib[] = {
 	{"init", init},
 	{"get_client", get_client},
+	{"reply", do_reply},
 	{"decrypt", do_decrypt},
-	{"write_data", write_data},
-	{"read_data", read_data},
+	{"encrypt", do_encrypt},
+	{"write_table", write_table},
+	{"read_table", read_table},
 	{"unserialise", unserialise},		// see serialise.c
 	{"serialise", serialise},			// see serialise.c
 	{"time", get_time},					// see utils.c
