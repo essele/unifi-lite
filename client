@@ -1,8 +1,8 @@
-#!../luajit
+#!./luajit
 
 package.cpath = "/home/essele/dev/unifi/c/?.so"
 
-u = package.loadlib("./unisvr.so", "luaopen_unisvr")()
+u = package.loadlib("c/unisvr.so", "luaopen_unisvr")()
 
 usage = {
 			["adopt"] = { 

@@ -981,7 +981,7 @@ int read_table(lua_State *L) {
 		fprintf(stderr, "read problem\n");
 		goto err;
 	}
-	fprintf(stderr, "about to serialise\n");
+	fprintf(stderr, "about to unserialise\n");
 	fprintf(stderr, "%s", d);
 	if(unserialise_variable(L, &d) != 1) goto err;
 	return 1;

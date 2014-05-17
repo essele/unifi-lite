@@ -1,17 +1,18 @@
-#!../luajit
+#!./luajit
 
 package.cpath = "/home/essele/dev/unifi/c/?.so"
 
-unisvr = package.loadlib("./unisvr.so", "luaopen_unisvr")()
+unisvr = package.loadlib("c/unisvr.so", "luaopen_unisvr")()
 
+cf = unisvr.read_table("conf/main.cf")
 
 
 print(unisvr.gen_hex(16));
 
-x = unisvr.read_table("fred");
-print("x="..tostring(x));
-print("a="..x.a);
-print("c="..x.c);
+--x = unisvr.read_table("ap/fred");
+--print("x="..tostring(x));
+--print("a="..x.a);
+--print("c="..x.c);
 
 --l = {}
 --l.a = 45;
@@ -43,12 +44,15 @@ function handle_adopting(c)
 	if(c.data.cfgversion == "?") then
 		print("New Version Needed")
 		local t = {}
+		local selfrun_guest_mode = "pass"		-- TODO
+		local include_authkey = false
 
 		-- first work out if we need a new authkey, basically if we don't
 		-- have one in the registry, or if we used a different one then we
 		-- regenerate
 		if(not ap.authkey or ap.authkey ~= c.used_authkey) then
 			ap.authkey = unisvr.gen_hex(16)
+			include_authkey = true
 		end
 
 		-- we create a config version for this initial config
@@ -62,11 +66,13 @@ function handle_adopting(c)
 		unisvr.add_cfg(t, "mgmtcfg", "mgmt.authkey", ap.authkey);
 		unisvr.add_cfg(t, "mgmtcfg", "mgmt.cfgversion", ap.cfgversion);
 		unisvr.add_cfg(t, "mgmtcfg", "mgmt.servers.1.url", "TODO");
-		unisvr.add_cfg(t, "mgmtcfg", "mgmt.selfrun_guest_mode", "TODO");
-		unisvr.add_cfg(t, "mgmtcfg", "selfrun_guest_mode", "TODO");
+		unisvr.add_cfg(t, "mgmtcfg", "mgmt.selfrun_guest_mode", selfrun_guest_mode);
+		unisvr.add_cfg(t, "mgmtcfg", "selfrun_guest_mode", selfrun_guest_mode);
 		unisvr.add_cfg(t, "mgmtcfg", "cfgversion", "TODO");
 		unisvr.add_cfg(t, "mgmtcfg", "led_enabled", "TODO");
-		unisvr.add_cfg(t, "mgmtcfg", "authkey", ap.authkey);
+		if(include_authkey) then
+			unisvr.add_cfg(t, "mgmtcfg", "authkey", ap.authkey);
+		end
 
 		c.data = t;
 
