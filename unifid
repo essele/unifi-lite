@@ -4,7 +4,6 @@ package.cpath = "/home/essele/dev/unifi/c/?.so"
 
 unisvr = package.loadlib("c/unisvr.so", "luaopen_unisvr")()
 
-cf = unisvr.read_table("conf/main.cf")
 
 
 print(unisvr.gen_hex(16));
@@ -25,60 +24,133 @@ print(unisvr.gen_hex(16));
 -- we will keep live data in a table (key=mac) so that we don't
 -- write too much data to the flash, we don't need to persist
 -- too much.
+
 registry = {}
 registry.settings = {}			-- overall settings
 registry.ap = {}				-- access points
+
+-- read our main configuration file in, this will be editable
+-- through the admin interface
+
+cf = unisvr.read_table("conf/main.cf")
 
 -- the key to use when we get an initial request
 
 default_key = "ba86f2bbe107c7c57eb5f2690775c712"
 
+-- function to read a config item, but setting a default if
+-- there isn't a value defined
+function get_config(item, default)
+	if(cf[item] == nil) then
+		return default
+	else
+		return cf[item]
+	end
+end
 
 -- prepare the initial response for new clients
 function handle_adopting(c)
 	local ap = registry.ap[c.mac]
+	local full_response = false;
 
 	print("IN ADOPING NOW")
 	print(c.data.model)
 	print(c.data.model_display)
-	if(c.data.cfgversion == "?") then
-		print("New Version Needed")
-		local t = {}
-		local selfrun_guest_mode = "pass"		-- TODO
-		local include_authkey = false
 
-		-- first work out if we need a new authkey, basically if we don't
-		-- have one in the registry, or if we used a different one then we
-		-- regenerate
-		if(not ap.authkey or ap.authkey ~= c.used_authkey) then
-			ap.authkey = unisvr.gen_hex(16)
-			include_authkey = true
-		end
-
-		-- we create a config version for this initial config
-		-- ubnt seem to use just a random hex string, I'm not sure it's the
-		-- best approach since you could get a duplicate, but its very unlikely
-		ap.cfgversion = unisvr.gen_hex(8)
-
-		t._type = "setparam"
-		t.server_time_in_utc = unisvr.time()
-		unisvr.add_cfg(t, "mgmtcfg", "mgmt.is_default", "false");
-		unisvr.add_cfg(t, "mgmtcfg", "mgmt.authkey", ap.authkey);
-		unisvr.add_cfg(t, "mgmtcfg", "mgmt.cfgversion", ap.cfgversion);
-		unisvr.add_cfg(t, "mgmtcfg", "mgmt.servers.1.url", "TODO");
-		unisvr.add_cfg(t, "mgmtcfg", "mgmt.selfrun_guest_mode", selfrun_guest_mode);
-		unisvr.add_cfg(t, "mgmtcfg", "selfrun_guest_mode", selfrun_guest_mode);
-		unisvr.add_cfg(t, "mgmtcfg", "cfgversion", "TODO");
-		unisvr.add_cfg(t, "mgmtcfg", "led_enabled", "TODO");
-		if(include_authkey) then
-			unisvr.add_cfg(t, "mgmtcfg", "authkey", ap.authkey);
-		end
-
-		c.data = t;
-
-		-- If authkey was provided, then we don't need the standalone "authkey" bit
-		print(unisvr.serialise(t, true))
+	if(c.data.cfgversion == ap.cfgversion) then
+		-- this means we have responded to the initial config, so we
+		-- need to send the full response
+		full_response = true;
 	end
+
+--	if(c.data.cfgversion == "?" or c.data.cfgversion ~= ap.cfgversion) then
+	print("New Initial Config Needed")
+	local t = {}
+	local include_authkey = false
+	local selfrun_guest_mode = get_config("selfrun_guest_mode", "pass")
+	local led_enabled = get_config("led_enabled", "true")
+	local inform_host = get_config("inform_host", ap.inform.inform_ip)
+	local inform_port = get_config("inform_port", 2345)
+	local inform_url = string.format("http://%s:%d/inform", inform_host, inform_port)
+
+	-- first work out if we need a new authkey, basically if we don't
+	-- have one in the registry, or if we used a different one then we
+	-- regenerate
+	if(not ap.authkey or ap.authkey ~= c.used_authkey) then
+		ap.authkey = unisvr.gen_hex(16)
+		include_authkey = true
+	end
+
+	-- we create a config version for this config
+	-- ubnt seem to use just a random hex string, I'm not sure it's the
+	-- best approach since you could get a duplicate, but its very unlikely
+	ap.cfgversion = unisvr.gen_hex(8)
+
+	t._type = "setparam"
+	t.server_time_in_utc = unisvr.time()
+	unisvr.add_cfg(t, "mgmtcfg", "mgmt.is_default", "false")
+	unisvr.add_cfg(t, "mgmtcfg", "mgmt.authkey", ap.authkey)
+	unisvr.add_cfg(t, "mgmtcfg", "mgmt.cfgversion", ap.cfgversion)
+	unisvr.add_cfg(t, "mgmtcfg", "mgmt.servers.1.url", inform_url)
+	unisvr.add_cfg(t, "mgmtcfg", "mgmt.selfrun_guest_mode", selfrun_guest_mode)
+	unisvr.add_cfg(t, "mgmtcfg", "selfrun_guest_mode", selfrun_guest_mode)
+	unisvr.add_cfg(t, "mgmtcfg", "cfgversion", ap.cfgversion)
+	unisvr.add_cfg(t, "mgmtcfg", "led_enabled", led_enabled)
+	if(include_authkey) then
+		unisvr.add_cfg(t, "mgmtcfg", "authkey", ap.authkey)
+	end
+
+	if(full_response) then
+		local admin_user = get_config("admin_user", "ubnt")
+		local admin_pass = get_config("admin_pass", "ubnt")
+		local ntp_server = get_config("ntp_server", "0.ubnt.pool.ntp.org")
+
+		-- TODO: crypt with random salt
+
+		unisvr.add_cfg(t, "system_cfg", "# users")
+		unisvr.add_cfg(t, "system_cfg", "users.status", "enabled")
+		unisvr.add_cfg(t, "system_cfg", "users.1.name", admin_user)
+		unisvr.add_cfg(t, "system_cfg", "users.1.password", admin_pass)
+		unisvr.add_cfg(t, "system_cfg", "users.1.status", "enabled")
+		unisvr.add_cfg(t, "system_cfg", "# bridge")
+		unisvr.add_cfg(t, "system_cfg", "bridge.status", "enabled")
+		unisvr.add_cfg(t, "system_cfg", "bridge.1.devname", "br0")
+		unisvr.add_cfg(t, "system_cfg", "bridge.1.fd", "1")
+		unisvr.add_cfg(t, "system_cfg", "bridge.1.stp.status", "disabled")
+		unisvr.add_cfg(t, "system_cfg", "bridge.1.port.1.devname", "eth0")
+		if(ap.inform.has_eth1 == true) then
+			unisvr.add_cfg(t, "system_cfg", "bridge.1.port.2.devname", "eth1")
+		end
+		unisvr.add_cfg(t, "system_cfg", "snmp.status", "disabled")
+		unisvr.add_cfg(t, "system_cfg", "ppp.status", "disabled")
+		unisvr.add_cfg(t, "system_cfg", "pwdog.status", "disabled")
+		unisvr.add_cfg(t, "system_cfg", "dnsmasq.status", "disabled")
+		unisvr.add_cfg(t, "system_cfg", "wpasupplicant.status", "disabled")
+		unisvr.add_cfg(t, "system_cfg", "dhcpd.status", "disabled")
+		unisvr.add_cfg(t, "system_cfg", "httpd.status", "disabled")
+		unisvr.add_cfg(t, "system_cfg", "httpd.port.http", "80")
+		unisvr.add_cfg(t, "system_cfg", "httpd.port", "80")
+		unisvr.add_cfg(t, "system_cfg", "igmpproxy.status", "disabled")
+		unisvr.add_cfg(t, "system_cfg", "telnetd.status", "disabled")
+		unisvr.add_cfg(t, "system_cfg", "tshaper.status", "disabled")
+		unisvr.add_cfg(t, "system_cfg", "netmode", "bridge")
+		unisvr.add_cfg(t, "system_cfg", "ntpclient.status", "enabled")
+		unisvr.add_cfg(t, "system_cfg", "ntpclient.1.server", ntp_server)
+		unisvr.add_cfg(t, "system_cfg", "ntpclient.1.status", "enabled")
+		unisvr.add_cfg(t, "system_cfg", "syslog.status", "enabled")
+		unisvr.add_cfg(t, "system_cfg", "syslog.level", "7")		-- TODO: 7 or 8
+		unisvr.add_cfg(t, "system_cfg", "resolv.status", "enabled")
+		unisvr.add_cfg(t, "system_cfg", "resolv.nameserver.1.status", "disabled")	-- TODO: by config
+		unisvr.add_cfg(t, "system_cfg", "resolv.nameserver.2.status", "disabled")	-- TODO: by config
+		unisvr.add_cfg(t, "system_cfg", "dhcpc.1.status", "enabled")
+		unisvr.add_cfg(t, "system_cfg", "dhcpc.1.devname", "br0")
+		unisvr.add_cfg(t, "system_cfg", "route.status", "enabled")
+		unisvr.add_cfg(t, "system_cfg", "vlan.status", "enabled")
+		
+	end
+
+	c.data = t;
+	print(unisvr.serialise(t, true))		-- DEBUG
 end
 
 -- there is a basic state machine process that we need to follow

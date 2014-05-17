@@ -77,16 +77,21 @@ int get_time(lua_State *L) {
  * This is mostly used for the mgmtcfg field which is a horrible newline
  * separated list
  *
- * add_cfg(table, field, item, value)
+ * add_cfg(table, field, item, value)   [value is optional]
  *==============================================================================
  */
 int add_cfg(lua_State *L) {
 	luaL_Buffer	b;
+	int			do_equals = 0;
 
 	luaL_checktype(L, 1, LUA_TTABLE);
 	luaL_checktype(L, 2, LUA_TSTRING);
 	luaL_checktype(L, 3, LUA_TSTRING);
-	luaL_checktype(L, 4, LUA_TSTRING);
+
+	if(lua_gettop(L) == 4) {
+		luaL_checktype(L, 4, LUA_TSTRING);
+		do_equals = 1;
+	}
 
 	luaL_buffinit(L, &b);
 
@@ -104,9 +109,11 @@ int add_cfg(lua_State *L) {
 	// Now create the <item>=<value> string
 	lua_pushvalue(L, 3);
 	luaL_addvalue(&b);
-	luaL_addchar(&b, '=');
-	lua_pushvalue(L, 4);
-	luaL_addvalue(&b);
+	if(do_equals) {
+		luaL_addchar(&b, '=');
+		lua_pushvalue(L, 4);
+		luaL_addvalue(&b);
+	}
 
 	// Put it back into the table...
 	lua_pushvalue(L, 2);
