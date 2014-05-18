@@ -50,6 +50,7 @@
 #define BACKLOG			128						// max outstanding connections
 
 static char				HTTP_SEP[5] = { 0x0d, 0x0a, 0x0d, 0x0a, 0x00 };
+static char				HTTP_EOL[3] = { 0x0d, 0x0a, 0x00 };
 static char				INFORM_MAGIC[4] = { 'T', 'N', 'B', 'U' };
 static int				http_fd;				// socket for http listener
 static int				client_fd;				// for when we are the client
@@ -331,8 +332,10 @@ int read_client_data(struct client *c) {
  *------------------------------------------------------------------------------
  */
 int process_http_header(struct client *c) {
-	int cl;
-	int i = find_string(c->buffer, HTTP_SEP, c->complete);
+	char	*p;
+	int 	cl;
+	int 	i = find_string(c->buffer, HTTP_SEP, c->complete);
+
 	if(i >= 0) {
 		*(c->buffer + i) = '\0';
 		cl = find_content_length(c->buffer);
@@ -341,14 +344,24 @@ int process_http_header(struct client *c) {
 			return -1;
 		}
 		i += 4;				// get past the text
-		fprintf(stderr, "completed=%d i=%d cl=%d\n", c->complete, i, cl);
+
+		// Before we lose the HTTP header we should log the URL for
+		// reference...
+		p = strstr(c->buffer, HTTP_EOL);
+		if(p) {
+			*p = '\0';
+			wlog(LOG_INFO, "(%d) HTTP Request: %s", c->fd, c->buffer);
+		} else {
+			wlog(LOG_INFO, "(%d) malformed HTTP request", c->fd);
+		}
+
 		c->complete -= i;
 		memmove(c->buffer, c->buffer+i, c->complete);
 		c->expected = cl;
 		c->state = 1;
 		return cl;
 	} else if(c->complete >= 2048) {
-		wlog(LOG_WARN, "%s: nothing found within 2048, discarding", __func__);
+		wlog(LOG_WARN, "(%d) no header found within 2048, discarding", c->fd);
 		c->state = 9;
 		return -1;
 	}
@@ -388,6 +401,7 @@ static int select_loop() {
 
 	// Now we can select...
 	rc = select(max_fd+1, &fd_r, &fd_w, NULL, NULL);
+	// TODO: handle select errors properly
 	fprintf(stderr, "select rc=%d\n", rc);
 
 	// See if any of our clients are ready to do stuff...
@@ -406,18 +420,15 @@ static int select_loop() {
 			// If we get here, then we are reading real content, so we
 			// need to check if we have the right amount...
 			if(c->state == 1) {
-				fprintf(stderr, "now have %d of %d\n", c->complete, c->expected);
 				if(c->complete >= c->expected) {
 					c->state = 2;
 				}
 			}
 		}
 		if(FD_ISSET(c->fd, &fd_w)) {
-			fprintf(stderr, "Write for client %p\n", c);
 			// We are ready to write...
 			int togo = c->expected - c->complete;
 			int len = write(c->fd, c->buffer+c->complete, togo);
-			fprintf(stderr, "write=%d togo=%d\n", len, togo);
 			if(len < 0) {
 				wlog(LOG_ERROR, "%s: write error on client: %s", __func__, strerror(errno));
 				c->state = 9;
@@ -448,8 +459,14 @@ static int select_loop() {
 		c = new_client(fd);
 		// See if we are coming from "localhost" then we will process
 		// as an admin command
-		fprintf(stderr, "ADDR: %x\n", peer.sin_addr.s_addr);
 		if(ntohl(peer.sin_addr.s_addr) == INADDR_LOOPBACK) c->is_admin = 1;
+
+		// Log the connection for non admin connections
+		if(!c->is_admin) {
+			char	ip[18];
+			inet_ntop(AF_INET, (void *)&peer.sin_addr.s_addr, ip, sizeof(ip));
+			wlog(LOG_INFO, "(%d) AP Connection from: %s", c->fd, ip);
+		}
 
 		c->state = 0;
 	}
@@ -473,7 +490,6 @@ struct client *clean_and_find_ready() {
 		}
 		// Remove any in state 9
 		if(c->next->state == 9) {
-			fprintf(stderr, "freeing client %p\n", c->next);
 			d = c->next;
 			if(d->buffer) free(d->buffer);
 			close(d->fd);
@@ -667,15 +683,14 @@ static int server_init(lua_State *L) {
 	head->next = NULL;
 	clients = head;
 
-	int rc = bind_listener("0.0.0.0", 2345);
-	fprintf(stderr, "rc=%d\n", rc);
-
-	http_fd = rc;
-
 	// Initialise SSL
 	init_encryption();
 
-	lua_pushboolean(L, 1);
+	// Bind
+	int rc = bind_listener("0.0.0.0", 2345);
+	http_fd = rc;
+
+	lua_pushboolean(L, (rc < 0 ? 0 : 1));
 	return 1;
 }
 
