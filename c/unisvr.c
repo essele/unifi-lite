@@ -56,6 +56,9 @@ static char				INFORM_MAGIC[4] = { 'T', 'N', 'B', 'U' };
 static int				http_fd;				// socket for http listener
 static int				client_fd;				// for when we are the client
 
+#define	CR_BLKSIZE	8192					// blocksize for admin client
+#define	AP_BLKSIZE	8192					// blocksize for ap's
+
 /*
  * The header structure for an "inform" message
  */
@@ -83,10 +86,12 @@ struct client {
 									// 2 = ready to give to lua
 									// 3 = idle (with lua)
 									// 4 = waiting to write (send)
+	struct gbuffer	*gbuf;			// growing buffer for data
 	int				expected;		// how much to send/receive
-	int				complete;		// how much we have sent/received
-	char			*buffer;		// our data buffer
-	int				b_size;			// the buffer alloc'd size
+//	int				complete;		// how much we have sent/received
+	int				written;		// how much we have sent
+//	char			*buffer;		// our data buffer
+//	int				b_size;			// the buffer alloc'd size
 
 	// Saved fields for reference
 	int				is_admin;		// admin commands not client
@@ -216,7 +221,6 @@ err1:	lua_pop(L, 1);		// remove the returned string
 		return 1;
 }
 
-#define CR_BLKSIZE	8192
 int client_read(lua_State *L) {
 	struct gbuffer		*b;
 	char				*p;
@@ -238,6 +242,7 @@ int client_read(lua_State *L) {
 		gbuffer_inc(b, len);
 	}
 	p = gbuffer_ptr(b);
+	fprintf(stderr, "CLIENT: %s\n", p);
 	if(!unserialise_variable(L, &p)) lua_pushnil(L);
 	gbuffer_free(b);
 	return 1;
@@ -283,6 +288,8 @@ struct client *new_client(int fd) {
 		exit(1);
 	}
 	memset(c, 0, sizeof(struct client));
+
+	c->gbuf = gbuffer_new(8192);
 	c->fd = fd;
 	c->next = clients->next;
 	clients->next = c;
@@ -295,10 +302,11 @@ struct client *new_client(int fd) {
  *------------------------------------------------------------------------------
  */
 int read_client_data(struct client *c) {
-	int 	space = c->b_size - c->complete;
+//	int 	space = c->b_size - c->complete;
 	int 	n;
-	char 	*b;
+//	char 	*b;
 
+/*
 	if(space < 2048) {
 		c->buffer = realloc(c->buffer, c->b_size + 8192);
 		if(!c->buffer) {
@@ -309,8 +317,10 @@ int read_client_data(struct client *c) {
 		c->b_size += 8192;
 		space = c->b_size - c->complete;
 	}
-	b = c->buffer + c->complete;
-	n = read(c->fd, b, space);
+*/
+	gbuffer_need(c->gbuf, AP_BLKSIZE);
+//	b = c->buffer + c->complete;
+	n = read(c->fd, gbuffer_cur(c->gbuf), AP_BLKSIZE);
 	if(n == 0) {
 		// eof -- for inform stuff is a problem since we were expecting data
 		//        for admin connections it signifies that we have everything
@@ -320,7 +330,8 @@ int read_client_data(struct client *c) {
 		wlog(LOG_ERROR, "%s: read error on client: %s", __func__, strerror(errno));
 		c->state = 9;					// discard client
 	} else {
-		c->complete += n;
+//		c->complete += n;
+		gbuffer_inc(c->gbuf, n);
 	}
 	return n;
 }
@@ -333,11 +344,13 @@ int read_client_data(struct client *c) {
 int process_http_header(struct client *c) {
 	char	*p;
 	int 	cl;
-	int 	i = find_string(c->buffer, HTTP_SEP, c->complete);
+	int 	i = find_string(gbuffer_ptr(c->gbuf), HTTP_SEP, gbuffer_size(c->gbuf));
+
+	fprintf(stderr, "NO HTTP SEP i=%d\n", i);
 
 	if(i >= 0) {
-		*(c->buffer + i) = '\0';
-		cl = find_content_length(c->buffer);
+		*(gbuffer_ptr(c->gbuf) + i) = '\0';
+		cl = find_content_length(gbuffer_ptr(c->gbuf));
 		if(cl <= 0) {
 			c->state = 9;
 			return -1;
@@ -346,20 +359,23 @@ int process_http_header(struct client *c) {
 
 		// Before we lose the HTTP header we should log the URL for
 		// reference...
-		p = strstr(c->buffer, HTTP_EOL);
+		p = strstr(gbuffer_ptr(c->gbuf), HTTP_EOL);
 		if(p) {
 			*p = '\0';
-			wlog(LOG_INFO, "(%d) HTTP Request: %s", c->fd, c->buffer);
+			wlog(LOG_INFO, "(%d) HTTP Request: %s", c->fd, gbuffer_ptr(c->gbuf));
 		} else {
 			wlog(LOG_INFO, "(%d) malformed HTTP request", c->fd);
 		}
 
-		c->complete -= i;
-		memmove(c->buffer, c->buffer+i, c->complete);
+		// Hack to move data in the gbuffer
+		c->gbuf->data_size -= i;
+		memmove(c->gbuf->p, c->gbuf->p + i, c->gbuf->data_size);
+//		c->complete -= i;
+//		memmove(c->buffer, c->buffer+i, c->complete);
 		c->expected = cl;
 		c->state = 1;
 		return cl;
-	} else if(c->complete >= 2048) {
+	} else if(gbuffer_size(c->gbuf) >= 2048) {
 		wlog(LOG_WARN, "(%d) no header found within 2048, discarding", c->fd);
 		c->state = 9;
 		return -1;
@@ -419,22 +435,23 @@ static int select_loop() {
 			// If we get here, then we are reading real content, so we
 			// need to check if we have the right amount...
 			if(c->state == 1) {
-				if(c->complete >= c->expected) {
+//				if(c->complete >= c->expected) {
+				if(gbuffer_size(c->gbuf) >= c->expected) {
 					c->state = 2;
 				}
 			}
 		}
 		if(FD_ISSET(c->fd, &fd_w)) {
 			// We are ready to write...
-			int togo = c->expected - c->complete;
-			int len = write(c->fd, c->buffer+c->complete, togo);
+			int togo = gbuffer_size(c->gbuf) - c->written;
+			int len = write(c->fd, gbuffer_ptr(c->gbuf)+c->written, togo);
 			if(len < 0) {
 				wlog(LOG_ERROR, "%s: write error on client: %s", __func__, strerror(errno));
 				c->state = 9;
 				continue;
 			}
-			c->complete += len;
-			if(c->complete == c->expected) {
+			c->written += len;
+			if(c->written == gbuffer_size(c->gbuf)) {
 				// We are done, we can close
 				c->state = 9;
 				continue;
@@ -490,7 +507,8 @@ struct client *clean_and_find_ready() {
 		// Remove any in state 9
 		if(c->next->state == 9) {
 			d = c->next;
-			if(d->buffer) free(d->buffer);
+			gbuffer_free(d->gbuf);
+//			if(d->buffer) free(d->buffer);
 			close(d->fd);
 			c->next = d->next;
 			free(d);
@@ -733,10 +751,10 @@ static int get_client(lua_State *L) {
 	lua_newtable(L);
 	TABLE("_ref", lightuserdata, (void *)c);
 	if(c->is_admin) {
-		data = c->buffer;
+		data = gbuffer_ptr(c->gbuf);
 		TABLE("admin", boolean, 1);
 	} else {
-		struct inform	*hdr = (struct inform *)c->buffer;
+		struct inform	*hdr = (struct inform *)gbuffer_ptr(c->gbuf);
 		int				flags = ntohs(hdr->flags);
 
 		// Keep some useful fields handy...
@@ -780,15 +798,21 @@ static int get_client(lua_State *L) {
  *==============================================================================
  */
 static void add_reply_string(struct client *c, char *str, int l) {
+/*
 	int space = c->b_size - c->expected;
-
+*/
 	if(l==0) l = strlen(str);
+/*
 	if(space < l) {
 		c->buffer = realloc(c->buffer, c->b_size + l + 2048);
 		c->b_size += l + 2048;
 	}
+
 	memcpy(c->buffer + c->expected, str, l);
 	c->expected += l;
+*/
+	gbuffer_need(c->gbuf, l);
+	gbuffer_addstring(c->gbuf, str, l);
 }
 
 static char http_400[] = "Bad Request";
@@ -850,7 +874,8 @@ static int do_reply(lua_State *L) {
 
 	// Now clear our data so we start building the buffer
 	// from scratch (b_size is still correct though)
-	c->expected = 0;
+	gbuffer_reset(c->gbuf);
+	c->written = 0;
 
 	// Handle the admin case, it's simply a return of the data
 	if(c->is_admin) {
@@ -904,7 +929,7 @@ fin:	// Remove our data item (or nil) from the stack
 		lua_pop(L, 1);
 
 		// Now mark as ready to send...
-		c->complete = 0;
+		c->written = 0;
 		c->state = 4;
 
 		lua_pushboolean(L, 1);
@@ -1012,8 +1037,8 @@ err:	if(d) free(d);
 static const struct luaL_reg lib[] = {
 	{"server_init", server_init},
 	{"client_init", client_init},
-	{"client_write", client_write},
-	{"client_read", client_read},
+	{"client_write", client_write},		// for client
+	{"client_read", client_read},		// for client
 	{"get_client", get_client},
 	{"reply", do_reply},
 	{"decrypt", do_decrypt},
