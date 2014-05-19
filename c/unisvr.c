@@ -42,6 +42,7 @@
 #include "utils.h"
 #include "encryption.h"
 #include "log.h"
+#include "gbuffer.h"
 
 /*==============================================================================
  * Globals (local to this module)
@@ -215,32 +216,30 @@ err1:	lua_pop(L, 1);		// remove the returned string
 		return 1;
 }
 
+#define CR_BLKSIZE	8192
 int client_read(lua_State *L) {
-	char	*buf = NULL;
-	char	*p;
-	size_t	data_size = 0;
-	size_t	buf_size = 0;
-	size_t	space, len;
+	struct gbuffer		*b;
+	char				*p;
+	size_t				len;
+
+	b = gbuffer_new(CR_BLKSIZE);
 
 	while(1) {
 		// Make sure we have some space to read into...
-		if(buf_size - data_size < 2048) {
-			buf = realloc(buf, buf_size + 8192);
-			buf_size += 8192;
-		}
-		space = buf_size - data_size;
-		len = read(client_fd, buf + data_size, space);
+		gbuffer_need(b, CR_BLKSIZE);
+		len = read(client_fd, gbuffer_cur(b), CR_BLKSIZE);
 		if(len == 0) break;
 		if(len < 0) {
 			fprintf(stderr, "Error reading: err=%d\n", errno);
+			gbuffer_free(b);
 			lua_pushboolean(L, 0);
 			return 1;
 		}
-		data_size += len;
+		gbuffer_inc(b, len);
 	}
-	p = buf;
+	p = gbuffer_ptr(b);
 	if(!unserialise_variable(L, &p)) lua_pushnil(L);
-	free(buf);
+	gbuffer_free(b);
 	return 1;
 }
 

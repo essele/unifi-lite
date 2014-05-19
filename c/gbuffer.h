@@ -26,6 +26,7 @@
  * gbuffer_init(&b, <blocksize>)		-- blocksize is the alloc increment
  * gbuffer_free(&b)						-- free the buffer
  * gbuffer_add*							-- add stuff to the buffer
+ * gbuffer_need(&b, <size>)				-- make space for at least <size>
  *
  */
 
@@ -46,7 +47,14 @@ struct gbuffer {
 	size_t	blk_size;
 };
 
-static inline void make_space(struct gbuffer *b, size_t reqd) {
+#define gbuffer_cur(b) 				(b->p + b->data_size)
+#define gbuffer_ptr(b) 				(b->p)
+#define gbuffer_inc(b, len) 		b->data_size += len
+#define gbuffer_size(b)				(b->data_size)
+#define gbuffer_reset(b)			b->data_size = 0
+#define MAXNUMLEN       			32
+
+static inline void gbuffer_need(struct gbuffer *b, size_t reqd) {
 	if((b->alloc_size - b->data_size) < reqd) {
 		size_t need = ((reqd/b->blk_size)+1) * b->blk_size;
 
@@ -54,34 +62,49 @@ static inline void make_space(struct gbuffer *b, size_t reqd) {
 		b->p = realloc(b->p, b->alloc_size);
 	}
 }
-static inline void gbuffer_init(struct gbuffer *b, size_t blksize) {
+static inline struct gbuffer *gbuffer_new(size_t blksize) {
+	struct gbuffer *b = malloc(sizeof(struct gbuffer));
+	if(!b) return NULL;
+
 	b->p = NULL;
 	b->alloc_size = 0;
 	b->data_size = 0;
 	b->blk_size = blksize;
+	
+	return b;
 }
 static inline void gbuffer_free(struct gbuffer *b) {
 	if(b->p) free(b->p);
+	free(b);
 }
-static inline void gbuffer_add_char(struct gbuffer *b, char c) {
-	make_space(b, 1);
+static inline void gbuffer_addchar(struct gbuffer *b, char c) {
+	gbuffer_need(b, 1);
 	b->p[b->data_size++] = c;
 }
-static inline void gbuffer_add_lstring(struct gbuffer *b, char *p, size_t len) {
-	make_space(b, len);
+static inline void gbuffer_addchars(struct gbuffer *b, char c, size_t len) {
+	gbuffer_need(b, len);
+	while(len--) b->p[b->data_size++] = c;
+}
+
+// Note that this returns the length without the trailing zero
+static inline char *gbuffer_tostring(struct gbuffer *b, size_t *len) {
+	*len = b->data_size;
+	gbuffer_addchar(b, '\0');
+	return(b->p);
+}
+static inline void gbuffer_addstring(struct gbuffer *b, char *p, size_t len) {
+	if(!len) len = strlen(p);
+	gbuffer_need(b, len);
 	memcpy(b->p+b->data_size, p, len);
 	b->data_size += len;
 }
-static inline void gbuffer_add_string(struct gbuffer *b, char *p) {
-	int len = strlen(p);
-	gbuffer_add_lstring(b, p, len);
-}
-static inline void gbuffer_add_lquoted(struct gbuffer *b, char *p, size_t len) {
+static inline void gbuffer_addquoted(struct gbuffer *b, char *p, size_t len) {
 	char 		*s = p;
 	char 		*d = b->p + b->data_size;
 	size_t		i = 0;
-	
-	make_space(b, len*2);		// worst case is all quoted!
+
+	if(!len) len = strlen(p);
+	gbuffer_need(b, len*2);		// worst case is all quoted!
 	while(i < len) {
 		switch(*s) {
 			case '"':
@@ -100,10 +123,11 @@ static inline void gbuffer_add_lquoted(struct gbuffer *b, char *p, size_t len) {
 	}
 	b->data_size += (s-p);
 }
-static inline void gbuffer_add_quoted(struct gbuffer *b, char *p) {
-	int len = strlen(p);
-	gbuffer_add_lquoted(b, p, len);
+static inline void gbuffer_addnumber(struct gbuffer *b, double num) {
+    gbuffer_need(b, MAXNUMLEN);
+    b->data_size += sprintf(b->p+b->data_size, "%.14g", num);
 }
+
 
 #endif
 

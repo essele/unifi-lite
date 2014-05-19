@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <ctype.h>
 #include "serialise.h"
+#include "gbuffer.h"
 
 /*==============================================================================
  * Utility function to handle a growing string buffer, this is similar to the
@@ -31,6 +32,7 @@
 #define BUF_INC			2048
 #define MAXNUMLEN		32
 
+/*
 struct charbuf {
 	char	*p;
 	int		alloc;
@@ -72,7 +74,6 @@ void charbuf_addnumber(struct charbuf *b, double num) {
 	charbuf_make_space(b, MAXNUMLEN);
 	b->free -= sprintf(&b->p[b->alloc-b->free], "%.14g", num);
 }
-/* Note, the string will need freeing */
 char *charbuf_tostring(struct charbuf *b, int *len) {
 	char	*p = b->p;
 
@@ -83,6 +84,7 @@ char *charbuf_tostring(struct charbuf *b, int *len) {
 	free(b);
 	return p;
 }
+*/
 
 /*------------------------------------------------------------------------------
  * Push a copy of the string without the escapes (remove single backslashes)
@@ -206,13 +208,13 @@ err:	*str = 0;
  * Given an index into the lua stack (i.e. a variable) we will serialise the
  * data into a form that we can either store in a file or send over the network
  *
- * We use charbuf to concat the string in a reasonably efficient way
+ * We use gbuffer to concat the string in a reasonably efficient way
  *==============================================================================
  */
 #define INDENTING			(indent>-1)
-#define INDENT(b)			if(indent>-1) charbuf_addchars(b, '\t', indent)
+#define INDENT(b)			if(indent>-1) gbuffer_addchars(b, '\t', indent)
 
-int serialise_variable(lua_State *L, int index, struct charbuf *b, int indent) {
+int serialise_variable(lua_State *L, int index, struct gbuffer *b, int indent) {
 	const char	*p;
 	size_t		len;
 	int			type = lua_type(L, index);
@@ -221,13 +223,13 @@ int serialise_variable(lua_State *L, int index, struct charbuf *b, int indent) {
 
 	switch(type) {
 	case LUA_TBOOLEAN:
-		charbuf_addstring(b, (lua_toboolean(L, index) ? "true" : "false"), 0);
+		gbuffer_addstring(b, (lua_toboolean(L, index) ? "true" : "false"), 0);
 		break;
 	case LUA_TNUMBER:
-		charbuf_addnumber(b, lua_tonumber(L, index));
+		gbuffer_addnumber(b, lua_tonumber(L, index));
 		break;
 	case LUA_TSTRING:
-		charbuf_addchar(b, '"');
+		gbuffer_addchar(b, '"');
 		// We need to quote quotes...
 		p = lua_tolstring(L, index, &len);
 		while(len--) {
@@ -236,24 +238,24 @@ int serialise_variable(lua_State *L, int index, struct charbuf *b, int indent) {
 			case '\\':
 			case '\n':
 				// For this use case we keep \n as it is
-				// charbuf_addchar(b, '\\');
-				charbuf_addchar(b, *p++);
-				if(INDENTING) charbuf_addchars(b, '\t', 5);
+				// gbuffer_addchar(b, '\\');
+				gbuffer_addchar(b, *p++);
+				if(INDENTING) gbuffer_addchars(b, '\t', 5);
 				break;
 			case '\0':
-				charbuf_addstring(b, "\\000", 4);
+				gbuffer_addstring(b, "\\000", 4);
 				p++;
 				break;
 			default:
-				charbuf_addchar(b, *p++);
+				gbuffer_addchar(b, *p++);
 				break;
 			}
 		}
-		charbuf_addchar(b, '"');
+		gbuffer_addchar(b, '"');
 		break;
 	case LUA_TLIGHTUSERDATA:
 		// this isn't relevant to keeping
-		charbuf_addstring(b, "null", 4);
+		gbuffer_addstring(b, "null", 4);
 		break;
 	case LUA_TTABLE:
 		// we could be a hash, or we could be a list (look for __list)
@@ -261,8 +263,8 @@ int serialise_variable(lua_State *L, int index, struct charbuf *b, int indent) {
 		if(lua_isnil(L, -1)) {
 			// We are a normal hash...
 			lua_pop(L, 1);
-			charbuf_addchar(b, '{');
-			if(INDENTING) { charbuf_addchar(b, '\n'); indent ++; }
+			gbuffer_addchar(b, '{');
+			if(INDENTING) { gbuffer_addchar(b, '\n'); indent ++; }
 
 			lua_pushnil(L);
 			if(index < 0) index--;		// allow for the extra pushnil if we are negative
@@ -270,22 +272,22 @@ int serialise_variable(lua_State *L, int index, struct charbuf *b, int indent) {
 				if(first)
 					first = 0;
 				else
-					(INDENTING ? charbuf_addstring(b, " ,\n", 3) : charbuf_addchar(b, ','));
+					(INDENTING ? gbuffer_addstring(b, " ,\n", 3) : gbuffer_addchar(b, ','));
 	
 				INDENT(b);	
 				serialise_variable(L, -2, b, 0);
-				(INDENTING ? charbuf_addstring(b, " : ", 3) : charbuf_addchar(b, ':'));
+				(INDENTING ? gbuffer_addstring(b, " : ", 3) : gbuffer_addchar(b, ':'));
 				serialise_variable(L, -1, b, indent);
 				lua_pop(L, 1);
 			}
-			if(INDENTING) { charbuf_addchar(b, '\n'); indent--; INDENT(b); }
-			charbuf_addchar(b, '}');
+			if(INDENTING) { gbuffer_addchar(b, '\n'); indent--; INDENT(b); }
+			gbuffer_addchar(b, '}');
 		} else {
 			// We are an indexed list...
 			lua_pop(L, 1);
 
-			charbuf_addchar(b, '[');
-			if(INDENTING) { charbuf_addchar(b, '\n'); indent++; }
+			gbuffer_addchar(b, '[');
+			if(INDENTING) { gbuffer_addchar(b, '\n'); indent++; }
 
 			while(1) {
 				lua_rawgeti(L, index, i++);
@@ -296,14 +298,14 @@ int serialise_variable(lua_State *L, int index, struct charbuf *b, int indent) {
 				if(first)
 					first = 0;
 				else
-					(INDENTING ? charbuf_addstring(b, " ,\n", 3) : charbuf_addchar(b, ','));
+					(INDENTING ? gbuffer_addstring(b, " ,\n", 3) : gbuffer_addchar(b, ','));
 
 				INDENT(b);
 				serialise_variable(L, -1, b, indent);
 				lua_pop(L, 1);
 			}
-			if(INDENTING) { charbuf_addchar(b, '\n'); indent--; INDENT(b); }
-			charbuf_addchar(b, ']');
+			if(INDENTING) { gbuffer_addchar(b, '\n'); indent--; INDENT(b); }
+			gbuffer_addchar(b, ']');
 		}
 		break;
 	}
@@ -318,18 +320,21 @@ int unserialise(lua_State *L) {
 }
     
 int serialise(lua_State *L) {
-	struct charbuf 	*b = charbuf_new();
+//	struct charbuf 	*b = charbuf_new();
+	struct gbuffer	*b = gbuffer_new(BUF_INC);
 	char			*s;
-	int				len;
+	size_t			len;
 	int				indent = -1;
 
 	luaL_checktype(L, 2, LUA_TBOOLEAN);
 	if(lua_toboolean(L, 2) == 1) indent = 0;
 
 	serialise_variable(L, 1, b, indent);
-	s = charbuf_tostring(b, &len);
+//	s = charbuf_tostring(b, &len);
+	s = gbuffer_tostring(b, &len);
 	lua_pushlstring(L, s, len);
-	free(s);
+	gbuffer_free(b);
+//	free(s);
 	return 1;
 }
 
