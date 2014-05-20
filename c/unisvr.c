@@ -300,26 +300,9 @@ struct client *new_client(int fd) {
  *------------------------------------------------------------------------------
  */
 int read_client_data(struct client *c) {
-//	int 	space = c->b_size - c->complete;
 	int 	n;
-//	char 	*b;
 
-/*
-	if(space < 2048) {
-		c->buffer = realloc(c->buffer, c->b_size + 8192);
-		if(!c->buffer) {
-			wlog(LOG_ERROR, "%s: unable to extend buffer: realloc(): %s", __func__, strerror(errno));
-			c->state = 9;				// discard client
-			return -1;
-		}
-		c->b_size += 8192;
-		space = c->b_size - c->complete;
-	}
-*/
 	n = gbuffer_read(c->gbuf, c->fd, AP_BLKSIZE);
-//	gbuffer_need(c->gbuf, AP_BLKSIZE);
-//	b = c->buffer + c->complete;
-//	n = read(c->fd, gbuffer_cur(c->gbuf), AP_BLKSIZE);
 	if(n == 0) {
 		// eof -- for inform stuff is a problem since we were expecting data
 		//        for admin connections it signifies that we have everything
@@ -338,15 +321,16 @@ int read_client_data(struct client *c) {
  *------------------------------------------------------------------------------
  */
 int process_http_header(struct client *c) {
+	struct gbuffer	*gbuf = c->gbuf;
 	char	*p;
 	int 	cl;
-	int 	i = find_string(gbuffer_ptr(c->gbuf), HTTP_SEP, gbuffer_size(c->gbuf));
+	int 	i = find_string(gbuffer_ptr(gbuf), HTTP_SEP, gbuffer_size(gbuf));
 
 	fprintf(stderr, "NO HTTP SEP i=%d\n", i);
 
 	if(i >= 0) {
-		*(gbuffer_ptr(c->gbuf) + i) = '\0';
-		cl = find_content_length(gbuffer_ptr(c->gbuf));
+		*(gbuffer_ptr(gbuf) + i) = '\0';
+		cl = find_content_length(gbuffer_ptr(gbuf));
 		if(cl <= 0) {
 			c->state = 9;
 			return -1;
@@ -355,23 +339,20 @@ int process_http_header(struct client *c) {
 
 		// Before we lose the HTTP header we should log the URL for
 		// reference...
-		p = strstr(gbuffer_ptr(c->gbuf), HTTP_EOL);
+		p = strstr(gbuffer_ptr(gbuf), HTTP_EOL);
 		if(p) {
 			*p = '\0';
-			wlog(LOG_INFO, "(%d) HTTP Request: %s", c->fd, gbuffer_ptr(c->gbuf));
+			wlog(LOG_INFO, "(%d) HTTP Request: %s", c->fd, gbuffer_ptr(gbuf));
 		} else {
 			wlog(LOG_INFO, "(%d) malformed HTTP request", c->fd);
 		}
 
-		// Hack to move data in the gbuffer
-		c->gbuf->data_size -= i;
-		memmove(c->gbuf->p, c->gbuf->p + i, c->gbuf->data_size);
-//		c->complete -= i;
-//		memmove(c->buffer, c->buffer+i, c->complete);
+		// Remove the HTTP header now...
+		gbuffer_remove(gbuf, 0, i);
 		c->expected = cl;
 		c->state = 1;
 		return cl;
-	} else if(gbuffer_size(c->gbuf) >= 2048) {
+	} else if(gbuffer_size(gbuf) >= 2048) {
 		wlog(LOG_WARN, "(%d) no header found within 2048, discarding", c->fd);
 		c->state = 9;
 		return -1;
@@ -417,6 +398,8 @@ static int select_loop() {
 
 	// See if any of our clients are ready to do stuff...
 	for(c=clients->next; c; c=c->next) {
+		struct gbuffer	*gbuf = c->gbuf;
+
 		if(FD_ISSET(c->fd, &fd_r)) {
 			// We are ready to read...
 			if(read_client_data(c) <= 0) continue;
@@ -432,22 +415,22 @@ static int select_loop() {
 			// need to check if we have the right amount...
 			if(c->state == 1) {
 //				if(c->complete >= c->expected) {
-				if(gbuffer_size(c->gbuf) >= c->expected) {
+				if(gbuffer_size(gbuf) >= c->expected) {
 					c->state = 2;
 				}
 			}
 		}
 		if(FD_ISSET(c->fd, &fd_w)) {
 			// We are ready to write...
-			int togo = gbuffer_size(c->gbuf) - c->written;
-			int len = write(c->fd, gbuffer_ptr(c->gbuf)+c->written, togo);
+			int togo = gbuffer_size(gbuf) - c->written;
+			int len = write(c->fd, gbuffer_ptr(gbuf)+c->written, togo);
 			if(len < 0) {
 				wlog(LOG_ERROR, "%s: write error on client: %s", __func__, strerror(errno));
 				c->state = 9;
 				continue;
 			}
 			c->written += len;
-			if(c->written == gbuffer_size(c->gbuf)) {
+			if(c->written == gbuffer_size(gbuf)) {
 				// We are done, we can close
 				c->state = 9;
 				continue;
@@ -504,7 +487,6 @@ struct client *clean_and_find_ready() {
 		if(c->next->state == 9) {
 			d = c->next;
 			gbuffer_free(d->gbuf);
-//			if(d->buffer) free(d->buffer);
 			close(d->fd);
 			c->next = d->next;
 			free(d);
@@ -794,20 +776,7 @@ static int get_client(lua_State *L) {
  *==============================================================================
  */
 static void add_reply_string(struct client *c, char *str, int l) {
-/*
-	int space = c->b_size - c->expected;
-*/
 	if(l==0) l = strlen(str);
-/*
-	if(space < l) {
-		c->buffer = realloc(c->buffer, c->b_size + l + 2048);
-		c->b_size += l + 2048;
-	}
-
-	memcpy(c->buffer + c->expected, str, l);
-	c->expected += l;
-*/
-	gbuffer_need(c->gbuf, l);
 	gbuffer_addstring(c->gbuf, str, l);
 }
 
@@ -992,13 +961,14 @@ int read_table(lua_State *L) {
 	int		fd;
 	char	*d = NULL, *fname;
 	off_t	len;
+	int		rc = 0;
 
 	luaL_checktype(L, 1, LUA_TSTRING);
 	fname = (char *)lua_tostring(L, 1);
 
 	if((fd = open(fname, O_RDONLY)) == -1) {
 		fprintf(stderr, "open(): err=%s\n", strerror(errno));
-		goto err;
+		goto fin;
 	}
 	// Work out how long the file is...
 	len = lseek(fd, 0, SEEK_END);
@@ -1008,21 +978,21 @@ int read_table(lua_State *L) {
 	d = malloc(len+1);
 	if(!d) {
 		fprintf(stderr, "malloc problem\n");
-		goto err;
+		goto fin;
 	}
 	fprintf(stderr, "len=%d\n", (int)len);
 	if(read(fd, d, len) != len) {
 		fprintf(stderr, "read problem\n");
-		goto err;
+		goto fin;
 	}
 	fprintf(stderr, "about to unserialise\n");
 	fprintf(stderr, "%s", d);
-	if(unserialise_variable(L, &d) != 1) goto err;
-	return 1;
+	if(unserialise_variable(L, &d) != 1) goto fin;
+	rc = 1;
 
-err:	if(d) free(d);
+fin:	if(d) free(d);
 		if(fd >= 0) close(fd);
-		return 0;
+		return rc;
 }
 
 /*==============================================================================

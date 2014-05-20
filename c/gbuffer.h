@@ -134,6 +134,10 @@ static inline size_t gbuffer_read(struct gbuffer *b, int fd, size_t count) {
 	if(rc > 0) gbuffer_inc(b, rc);
 	return rc;
 }
+static inline void gbuffer_remove(struct gbuffer *b, size_t start, size_t count) {
+	b->data_size -= count;
+	memmove(b->p + start, b->p + (start+count), (b->data_size - start));
+}
 
 
 #endif
