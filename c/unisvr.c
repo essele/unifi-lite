@@ -230,16 +230,14 @@ int client_read(lua_State *L) {
 
 	while(1) {
 		// Make sure we have some space to read into...
-		gbuffer_need(b, CR_BLKSIZE);
-		len = read(client_fd, gbuffer_cur(b), CR_BLKSIZE);
+		len = gbuffer_read(b, client_fd, CR_BLKSIZE);
 		if(len == 0) break;
 		if(len < 0) {
 			fprintf(stderr, "Error reading: err=%d\n", errno);
 			gbuffer_free(b);
-			lua_pushboolean(L, 0);
+			lua_pushnil(L);
 			return 1;
 		}
-		gbuffer_inc(b, len);
 	}
 	p = gbuffer_ptr(b);
 	fprintf(stderr, "CLIENT: %s\n", p);
@@ -318,9 +316,10 @@ int read_client_data(struct client *c) {
 		space = c->b_size - c->complete;
 	}
 */
-	gbuffer_need(c->gbuf, AP_BLKSIZE);
+	n = gbuffer_read(c->gbuf, c->fd, AP_BLKSIZE);
+//	gbuffer_need(c->gbuf, AP_BLKSIZE);
 //	b = c->buffer + c->complete;
-	n = read(c->fd, gbuffer_cur(c->gbuf), AP_BLKSIZE);
+//	n = read(c->fd, gbuffer_cur(c->gbuf), AP_BLKSIZE);
 	if(n == 0) {
 		// eof -- for inform stuff is a problem since we were expecting data
 		//        for admin connections it signifies that we have everything
@@ -329,10 +328,7 @@ int read_client_data(struct client *c) {
 	} else if(n < 0) {
 		wlog(LOG_ERROR, "%s: read error on client: %s", __func__, strerror(errno));
 		c->state = 9;					// discard client
-	} else {
-//		c->complete += n;
-		gbuffer_inc(c->gbuf, n);
-	}
+	} 
 	return n;
 }
 
@@ -873,9 +869,8 @@ static int do_reply(lua_State *L) {
 	// At this point we have one extra item on the stack to remove later
 
 	// Now clear our data so we start building the buffer
-	// from scratch (b_size is still correct though)
+	// from scratch...
 	gbuffer_reset(c->gbuf);
-	c->written = 0;
 
 	// Handle the admin case, it's simply a return of the data
 	if(c->is_admin) {

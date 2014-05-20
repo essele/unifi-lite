@@ -127,6 +127,13 @@ static inline void gbuffer_addnumber(struct gbuffer *b, double num) {
     gbuffer_need(b, MAXNUMLEN);
     b->data_size += sprintf(b->p+b->data_size, "%.14g", num);
 }
+static inline size_t gbuffer_read(struct gbuffer *b, int fd, size_t count) {
+	size_t	rc;
+	gbuffer_need(b, count);
+	rc = read(fd, gbuffer_cur(b), count);
+	if(rc > 0) gbuffer_inc(b, rc);
+	return rc;
+}
 
 
 #endif
