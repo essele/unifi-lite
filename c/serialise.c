@@ -24,67 +24,10 @@
 #include "gbuffer.h"
 
 /*==============================================================================
- * Utility function to handle a growing string buffer, this is similar to the
- * Lua_Buffer concept, but should be quicker where we don't need to convert back
- * to a lua variable
+ * What increment should we grow our gbuffer ...
  *==============================================================================
  */
 #define BUF_INC			2048
-#define MAXNUMLEN		32
-
-/*
-struct charbuf {
-	char	*p;
-	int		alloc;
-	int free;
-};
-
-struct charbuf *charbuf_new() {
-	struct charbuf *b = malloc(sizeof(struct charbuf));
-	b->p = malloc(BUF_INC);
-	b->alloc = b->free = BUF_INC;
-	return b;
-}
-void charbuf_free(struct charbuf *b) {
-	free(b->p);
-	free(b);
-}
-void inline charbuf_make_space(struct charbuf *b, int need) {
-	// TODO: do this in one go, rather than a loop
-	while(b->free < need) {
-		b->alloc += BUF_INC; b->free += BUF_INC;
-		b->p = realloc(b->p, b->alloc);
-	}
-}
-void charbuf_addstring(struct charbuf *b, char *d, int len) {
-	if(!len) len = strlen(d);
-	charbuf_make_space(b, len);
-	memcpy(b->p+(b->alloc-b->free), d, len);
-	b->free -= len;
-}
-void charbuf_addchar(struct charbuf *b, char c) {
-	charbuf_make_space(b, 1);
-	b->p[b->alloc-b->free] = c;
-	b->free--;
-}
-void charbuf_addchars(struct charbuf *b, char c, int len) {
-	while(len--) charbuf_addchar(b, c);
-}
-void charbuf_addnumber(struct charbuf *b, double num) {
-	charbuf_make_space(b, MAXNUMLEN);
-	b->free -= sprintf(&b->p[b->alloc-b->free], "%.14g", num);
-}
-char *charbuf_tostring(struct charbuf *b, int *len) {
-	char	*p = b->p;
-
-	if(!len)
-		charbuf_addchar(b, '\0');
-	else
-		*len = b->alloc-b->free;
-	free(b);
-	return p;
-}
-*/
 
 /*------------------------------------------------------------------------------
  * Push a copy of the string without the escapes (remove single backslashes)
@@ -316,11 +259,12 @@ int serialise_variable(lua_State *L, int index, struct gbuffer *b, int indent) {
 int unserialise(lua_State *L) {
 	char *p = 0;
 
+	// TODO: this won't work ... surely we need to get the string from somewhere??
+
 	return unserialise_variable(L, &p);
 }
     
 int serialise(lua_State *L) {
-//	struct charbuf 	*b = charbuf_new();
 	struct gbuffer	*b = gbuffer_new(BUF_INC);
 	char			*s;
 	size_t			len;
@@ -330,11 +274,9 @@ int serialise(lua_State *L) {
 	if(lua_toboolean(L, 2) == 1) indent = 0;
 
 	serialise_variable(L, 1, b, indent);
-//	s = charbuf_tostring(b, &len);
 	s = gbuffer_tostring(b, &len);
 	lua_pushlstring(L, s, len);
 	gbuffer_free(b);
-//	free(s);
 	return 1;
 }
 

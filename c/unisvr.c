@@ -43,6 +43,7 @@
 #include "encryption.h"
 #include "log.h"
 #include "gbuffer.h"
+#include "template.h"
 
 /*==============================================================================
  * Globals (local to this module)
@@ -1015,6 +1016,7 @@ static const struct luaL_reg lib[] = {
 	{"time", get_time},					// see utils.c
 	{"add_cfg", add_cfg},				// see utils.c
 	{"gen_hex", gen_hex},				// see utils.c
+	{"template", template},				// see template.c
 //	{"log", lua_log},		// TODO
 	{NULL, NULL}
 };

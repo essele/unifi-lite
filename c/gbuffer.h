@@ -99,29 +99,29 @@ static inline void gbuffer_addstring(struct gbuffer *b, char *p, size_t len) {
 	b->data_size += len;
 }
 static inline void gbuffer_addquoted(struct gbuffer *b, char *p, size_t len) {
-	char 		*s = p;
 	char 		*d = b->p + b->data_size;
+	char 		*s = d;
 	size_t		i = 0;
 
 	if(!len) len = strlen(p);
 	gbuffer_need(b, len*2);		// worst case is all quoted!
 	while(i < len) {
-		switch(*s) {
+		switch(*p) {
 			case '"':
 				*d++ = '\\'; 
-				*d++ = *s++;
+				*d++ = *p++;
 				break;
 			case '\n':
 				*d++ = '\\'; 
 				*d++ = 'n'; 
-				s++;
+				p++;
 				break;
 			default:
-				*d++ = *s++;
+				*d++ = *p++;
 		}
 		i++;
 	}
-	b->data_size += (s-p);
+	b->data_size += (d-s);
 }
 static inline void gbuffer_addnumber(struct gbuffer *b, double num) {
     gbuffer_need(b, MAXNUMLEN);
@@ -138,7 +138,6 @@ static inline void gbuffer_remove(struct gbuffer *b, size_t start, size_t count)
 	b->data_size -= count;
 	memmove(b->p + start, b->p + (start+count), (b->data_size - start));
 }
-
 
 #endif
 
