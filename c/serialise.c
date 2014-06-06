@@ -101,7 +101,6 @@ int unserialise_variable(lua_State *L, char **str) {
 		lua_pushstring(L, "__list");
 		lua_pushnumber(L, 1);
 		lua_rawset(L, -3);
-		// TODO: set ref to tell us we are a list
 		while(*p != ']') {
 			lua_pushnumber(L, i++);
 			REMOVE_SPACE(p);
@@ -255,11 +254,11 @@ int serialise_variable(lua_State *L, int index, struct gbuffer *b, int indent) {
 	return 0;
 }
 
-
 int unserialise(lua_State *L) {
-	char *p = 0;
+	char *p;
 
-	// TODO: this won't work ... surely we need to get the string from somewhere??
+	luaL_checktype(L, 1, LUA_TSTRING);
+	p = (char *)lua_tostring(L, 1);
 
 	return unserialise_variable(L, &p);
 }
