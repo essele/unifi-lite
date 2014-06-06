@@ -32,7 +32,7 @@ unisvr.so:			unisvr.o serialise.o utils.o encryption.o log.o template.o
 #
 # Special Flags
 #
-LDFLAGS_unisvr.so = -lssl -lrt
+LDFLAGS_unisvr.so = -lssl -lrt -lcrypt
 
 include $(ALL_D)
 

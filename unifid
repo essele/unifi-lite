@@ -68,11 +68,6 @@ function handle_adopting(c)
 	local env = {}
 	local t = {}
 	local include_authkey = false
-	local selfrun_guest_mode = get_config("selfrun_guest_mode", "pass")
-	local led_enabled = get_config("led_enabled", "true")
-	local inform_host = get_config("inform_host", ap.inform.inform_ip)
-	local inform_port = get_config("inform_port", 2345)
-	local inform_url = string.format("http://%s:%d/inform", inform_host, inform_port)
 
 	-- first work out if we need a new authkey, basically if we don't
 	-- have one in the registry, or if we used a different one then we
@@ -87,6 +82,12 @@ function handle_adopting(c)
 	-- best approach since you could get a duplicate, but its very unlikely
 	ap.cfgversion = unisvr.gen_hex(8)
 
+	-- we need to encrypt the password for this ap but we want to keep
+	-- the salt common for a given access point
+	if(not ap.crypted_password) then
+		ap.crypted_password = unisvr.crypt_password(get_config("admin_pass", "ubnt"))
+	end
+
 	--
 	-- prepare for our template generation
 	--
@@ -94,23 +95,13 @@ function handle_adopting(c)
 	env.AP = ap
 	env.include_authkey = include_authkey
 
+-- HACK TO TEST TEMPLATE
 full_response = true
 
 	-- now generate the mgmtcfg template and fill in the other bits
 	t.mgmtcfg = unisvr.template("templates/mgmtcfg.ltp", env)
 	t._type = "setparam"
 	t.server_time_in_utc = unisvr.time()
---	unisvr.add_cfg(t, "mgmtcfg", "mgmt.is_default", "false")
---	unisvr.add_cfg(t, "mgmtcfg", "mgmt.authkey", ap.authkey)
---	unisvr.add_cfg(t, "mgmtcfg", "mgmt.cfgversion", ap.cfgversion)
---	unisvr.add_cfg(t, "mgmtcfg", "mgmt.servers.1.url", inform_url)
---	unisvr.add_cfg(t, "mgmtcfg", "mgmt.selfrun_guest_mode", selfrun_guest_mode)
---	unisvr.add_cfg(t, "mgmtcfg", "selfrun_guest_mode", selfrun_guest_mode)
---	unisvr.add_cfg(t, "mgmtcfg", "cfgversion", ap.cfgversion)
---	unisvr.add_cfg(t, "mgmtcfg", "led_enabled", led_enabled)
---	if(include_authkey) then
---		unisvr.add_cfg(t, "mgmtcfg", "authkey", ap.authkey)
---	end
 
 	if(full_response) then
 		t.system_cfg = unisvr.template("templates/system_cfg.ltp", env);

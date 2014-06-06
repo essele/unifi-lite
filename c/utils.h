@@ -23,5 +23,6 @@
 int add_cfg(lua_State *L);
 int get_time(lua_State *L);
 int gen_hex(lua_State *L);
+int crypt_password(lua_State *L);
 
 #endif

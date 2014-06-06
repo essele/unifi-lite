@@ -19,10 +19,28 @@
 #include <lua.h>
 #include <lauxlib.h>
 #include <lualib.h>
-#include <errno.h>
-#include <time.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <time.h>
+#include <crypt.h>
+
+/*==============================================================================
+ * A couple of functions use random numbers, so we make sure we have a common
+ * way of ensuring we have correctly seeded it
+ *==============================================================================
+ */
+static int			seeded = 0;
+
+static inline void ensure_seed() {
+	struct timespec		spec;
+
+	if(!seeded) {
+		clock_gettime(CLOCK_REALTIME, &spec);
+		srand((unsigned int)spec.tv_nsec);
+		seeded++;
+	}
+}
 
 
 /*==============================================================================
@@ -33,18 +51,13 @@
  *==============================================================================
  */
 int gen_hex(lua_State *L) {
-	static int			seeded = 0;
-	struct timespec		spec;				// for seeding
 	int					i, len;
 	char				*s;
 
 	luaL_checktype(L, 1, LUA_TNUMBER);
 
-	if(!seeded) {
-		clock_gettime(CLOCK_REALTIME, &spec);
-		srand((unsigned int)spec.tv_nsec);
-		seeded++;
-	}
+	ensure_seed();
+
 	len = lua_tonumber(L, 1);
 	s = malloc((len*2)+1);
 	if(!s) {
@@ -54,6 +67,29 @@ int gen_hex(lua_State *L) {
 	for(i=0; i < len; i++) sprintf(s+(i*2), "%02x", (rand()&0xff));
 	lua_pushlstring(L, s, len*2);
 	free(s);
+	return 1;
+}
+
+/*==============================================================================
+ * Generate a random salt and then crypt() the given password
+ *==============================================================================
+ */
+static char schars[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./";
+
+int crypt_password(lua_State *L) {
+	char	salt[3];
+	char	*p;
+
+	luaL_checktype(L, 1, LUA_TSTRING);
+
+	ensure_seed();	
+	salt[0] = schars[rand()%(sizeof(schars)-1)];
+	salt[1] = schars[rand()%(sizeof(schars)-1)];
+	salt[2] = 0;
+
+	p = (char *)lua_tostring(L, 1);
+	lua_pushstring(L, crypt(p, salt));
+
 	return 1;
 }
 
