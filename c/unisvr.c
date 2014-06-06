@@ -327,8 +327,6 @@ int process_http_header(struct client *c) {
 	int 	cl;
 	int 	i = find_string(gbuffer_ptr(gbuf), HTTP_SEP, gbuffer_size(gbuf));
 
-	fprintf(stderr, "NO HTTP SEP i=%d\n", i);
-
 	if(i >= 0) {
 		*(gbuffer_ptr(gbuf) + i) = '\0';
 		cl = find_content_length(gbuffer_ptr(gbuf));
@@ -960,7 +958,7 @@ err1:	lua_pop(L, 1);		// remove the returned string
  */
 int read_table(lua_State *L) {
 	int		fd;
-	char	*d = NULL, *fname;
+	char	*d = NULL, *p, *fname;
 	off_t	len;
 	int		rc = 0;
 
@@ -988,10 +986,14 @@ int read_table(lua_State *L) {
 	}
 	fprintf(stderr, "about to unserialise\n");
 	fprintf(stderr, "%s", d);
-	if(unserialise_variable(L, &d) != 1) goto fin;
+	p = d;
+	if(unserialise_variable(L, &p) != 1) goto fin;
+	fprintf(stderr, "0\n");
 	rc = 1;
 
-fin:	if(d) free(d);
+fin:	fprintf(stderr, "1\n");
+		if(d) free(d);
+		fprintf(stderr, "2\n");
 		if(fd >= 0) close(fd);
 		return rc;
 }

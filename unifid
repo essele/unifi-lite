@@ -65,6 +65,7 @@ function handle_adopting(c)
 
 --	if(c.data.cfgversion == "?" or c.data.cfgversion ~= ap.cfgversion) then
 	print("New Initial Config Needed")
+	local env = {}
 	local t = {}
 	local include_authkey = false
 	local selfrun_guest_mode = get_config("selfrun_guest_mode", "pass")
@@ -86,67 +87,79 @@ function handle_adopting(c)
 	-- best approach since you could get a duplicate, but its very unlikely
 	ap.cfgversion = unisvr.gen_hex(8)
 
+	--
+	-- prepare for our template generation
+	--
+	env.CONFIG = get_config
+	env.AP = ap
+	env.include_authkey = include_authkey
+
+full_response = true
+
+	-- now generate the mgmtcfg template and fill in the other bits
+	t.mgmtcfg = unisvr.template("templates/mgmtcfg.ltp", env)
 	t._type = "setparam"
 	t.server_time_in_utc = unisvr.time()
-	unisvr.add_cfg(t, "mgmtcfg", "mgmt.is_default", "false")
-	unisvr.add_cfg(t, "mgmtcfg", "mgmt.authkey", ap.authkey)
-	unisvr.add_cfg(t, "mgmtcfg", "mgmt.cfgversion", ap.cfgversion)
-	unisvr.add_cfg(t, "mgmtcfg", "mgmt.servers.1.url", inform_url)
-	unisvr.add_cfg(t, "mgmtcfg", "mgmt.selfrun_guest_mode", selfrun_guest_mode)
-	unisvr.add_cfg(t, "mgmtcfg", "selfrun_guest_mode", selfrun_guest_mode)
-	unisvr.add_cfg(t, "mgmtcfg", "cfgversion", ap.cfgversion)
-	unisvr.add_cfg(t, "mgmtcfg", "led_enabled", led_enabled)
-	if(include_authkey) then
-		unisvr.add_cfg(t, "mgmtcfg", "authkey", ap.authkey)
-	end
+--	unisvr.add_cfg(t, "mgmtcfg", "mgmt.is_default", "false")
+--	unisvr.add_cfg(t, "mgmtcfg", "mgmt.authkey", ap.authkey)
+--	unisvr.add_cfg(t, "mgmtcfg", "mgmt.cfgversion", ap.cfgversion)
+--	unisvr.add_cfg(t, "mgmtcfg", "mgmt.servers.1.url", inform_url)
+--	unisvr.add_cfg(t, "mgmtcfg", "mgmt.selfrun_guest_mode", selfrun_guest_mode)
+--	unisvr.add_cfg(t, "mgmtcfg", "selfrun_guest_mode", selfrun_guest_mode)
+--	unisvr.add_cfg(t, "mgmtcfg", "cfgversion", ap.cfgversion)
+--	unisvr.add_cfg(t, "mgmtcfg", "led_enabled", led_enabled)
+--	if(include_authkey) then
+--		unisvr.add_cfg(t, "mgmtcfg", "authkey", ap.authkey)
+--	end
 
 	if(full_response) then
-		local admin_user = get_config("admin_user", "ubnt")
-		local admin_pass = get_config("admin_pass", "ubnt")
-		local ntp_server = get_config("ntp_server", "0.ubnt.pool.ntp.org")
+		t.system_cfg = unisvr.template("templates/system_cfg.ltp", env);
+--		local admin_user = get_config("admin_user", "ubnt")
+--		local admin_pass = get_config("admin_pass", "ubnt")
+--		local ntp_server = get_config("ntp_server", "0.ubnt.pool.ntp.org")
+--
+--		-- TODO: crypt with random salt
 
-		-- TODO: crypt with random salt
-
-		unisvr.add_cfg(t, "system_cfg", "# users")
-		unisvr.add_cfg(t, "system_cfg", "users.status", "enabled")
-		unisvr.add_cfg(t, "system_cfg", "users.1.name", admin_user)
-		unisvr.add_cfg(t, "system_cfg", "users.1.password", admin_pass)
-		unisvr.add_cfg(t, "system_cfg", "users.1.status", "enabled")
-		unisvr.add_cfg(t, "system_cfg", "# bridge")
-		unisvr.add_cfg(t, "system_cfg", "bridge.status", "enabled")
-		unisvr.add_cfg(t, "system_cfg", "bridge.1.devname", "br0")
-		unisvr.add_cfg(t, "system_cfg", "bridge.1.fd", "1")
-		unisvr.add_cfg(t, "system_cfg", "bridge.1.stp.status", "disabled")
-		unisvr.add_cfg(t, "system_cfg", "bridge.1.port.1.devname", "eth0")
-		if(ap.inform.has_eth1 == true) then
-			unisvr.add_cfg(t, "system_cfg", "bridge.1.port.2.devname", "eth1")
-		end
-		unisvr.add_cfg(t, "system_cfg", "snmp.status", "disabled")
-		unisvr.add_cfg(t, "system_cfg", "ppp.status", "disabled")
-		unisvr.add_cfg(t, "system_cfg", "pwdog.status", "disabled")
-		unisvr.add_cfg(t, "system_cfg", "dnsmasq.status", "disabled")
-		unisvr.add_cfg(t, "system_cfg", "wpasupplicant.status", "disabled")
-		unisvr.add_cfg(t, "system_cfg", "dhcpd.status", "disabled")
-		unisvr.add_cfg(t, "system_cfg", "httpd.status", "disabled")
-		unisvr.add_cfg(t, "system_cfg", "httpd.port.http", "80")
-		unisvr.add_cfg(t, "system_cfg", "httpd.port", "80")
-		unisvr.add_cfg(t, "system_cfg", "igmpproxy.status", "disabled")
-		unisvr.add_cfg(t, "system_cfg", "telnetd.status", "disabled")
-		unisvr.add_cfg(t, "system_cfg", "tshaper.status", "disabled")
-		unisvr.add_cfg(t, "system_cfg", "netmode", "bridge")
-		unisvr.add_cfg(t, "system_cfg", "ntpclient.status", "enabled")
-		unisvr.add_cfg(t, "system_cfg", "ntpclient.1.server", ntp_server)
-		unisvr.add_cfg(t, "system_cfg", "ntpclient.1.status", "enabled")
-		unisvr.add_cfg(t, "system_cfg", "syslog.status", "enabled")
-		unisvr.add_cfg(t, "system_cfg", "syslog.level", "7")		-- TODO: 7 or 8
-		unisvr.add_cfg(t, "system_cfg", "resolv.status", "enabled")
-		unisvr.add_cfg(t, "system_cfg", "resolv.nameserver.1.status", "disabled")	-- TODO: by config
-		unisvr.add_cfg(t, "system_cfg", "resolv.nameserver.2.status", "disabled")	-- TODO: by config
-		unisvr.add_cfg(t, "system_cfg", "dhcpc.1.status", "enabled")
-		unisvr.add_cfg(t, "system_cfg", "dhcpc.1.devname", "br0")
-		unisvr.add_cfg(t, "system_cfg", "route.status", "enabled")
-		unisvr.add_cfg(t, "system_cfg", "vlan.status", "enabled")
-		
+--		unisvr.add_cfg(t, "system_cfg", "# users")
+--		unisvr.add_cfg(t, "system_cfg", "users.status", "enabled")
+--		unisvr.add_cfg(t, "system_cfg", "users.1.name", admin_user)
+--		unisvr.add_cfg(t, "system_cfg", "users.1.password", admin_pass)
+--		unisvr.add_cfg(t, "system_cfg", "users.1.status", "enabled")
+--		unisvr.add_cfg(t, "system_cfg", "# bridge")
+--		unisvr.add_cfg(t, "system_cfg", "bridge.status", "enabled")
+--		unisvr.add_cfg(t, "system_cfg", "bridge.1.devname", "br0")
+--		unisvr.add_cfg(t, "system_cfg", "bridge.1.fd", "1")
+--		unisvr.add_cfg(t, "system_cfg", "bridge.1.stp.status", "disabled")
+--		unisvr.add_cfg(t, "system_cfg", "bridge.1.port.1.devname", "eth0")
+--		if(ap.inform.has_eth1 == true) then
+--			unisvr.add_cfg(t, "system_cfg", "bridge.1.port.2.devname", "eth1")
+--		end
+--		unisvr.add_cfg(t, "system_cfg", "snmp.status", "disabled")
+--		unisvr.add_cfg(t, "system_cfg", "ppp.status", "disabled")
+--		unisvr.add_cfg(t, "system_cfg", "pwdog.status", "disabled")
+--		unisvr.add_cfg(t, "system_cfg", "dnsmasq.status", "disabled")
+--		unisvr.add_cfg(t, "system_cfg", "wpasupplicant.status", "disabled")
+--		unisvr.add_cfg(t, "system_cfg", "dhcpd.status", "disabled")
+--		unisvr.add_cfg(t, "system_cfg", "httpd.status", "disabled")
+--		unisvr.add_cfg(t, "system_cfg", "httpd.port.http", "80")
+--		unisvr.add_cfg(t, "system_cfg", "httpd.port", "80")
+--		unisvr.add_cfg(t, "system_cfg", "igmpproxy.status", "disabled")
+--		unisvr.add_cfg(t, "system_cfg", "telnetd.status", "disabled")
+--		unisvr.add_cfg(t, "system_cfg", "tshaper.status", "disabled")
+--		unisvr.add_cfg(t, "system_cfg", "netmode", "bridge")
+--		unisvr.add_cfg(t, "system_cfg", "ntpclient.status", "enabled")
+--		unisvr.add_cfg(t, "system_cfg", "ntpclient.1.server", ntp_server)
+--		unisvr.add_cfg(t, "system_cfg", "ntpclient.1.status", "enabled")
+--		unisvr.add_cfg(t, "system_cfg", "syslog.status", "enabled")
+--		unisvr.add_cfg(t, "system_cfg", "syslog.level", "7")		-- TODO: 7 or 8
+--		unisvr.add_cfg(t, "system_cfg", "resolv.status", "enabled")
+--		unisvr.add_cfg(t, "system_cfg", "resolv.nameserver.1.status", "disabled")	-- TODO: by config
+--		unisvr.add_cfg(t, "system_cfg", "resolv.nameserver.2.status", "disabled")	-- TODO: by config
+--		unisvr.add_cfg(t, "system_cfg", "dhcpc.1.status", "enabled")
+--		unisvr.add_cfg(t, "system_cfg", "dhcpc.1.devname", "br0")
+--		unisvr.add_cfg(t, "system_cfg", "route.status", "enabled")
+--		unisvr.add_cfg(t, "system_cfg", "vlan.status", "enabled")
+--		
 	end
 
 	c.data = t;

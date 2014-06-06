@@ -80,9 +80,9 @@ int process_template(char *filename, struct gbuffer *b) {
 		char	*sc = strstr(p, "[[");
 		if(!sc) {
 			// no code left, so we just write the rest...
-			gbuffer_addstring(b, "print(\"", 7);
+			gbuffer_addstring(b, "_op = _op .. \"", 0);
 			gbuffer_addquoted(b, p, 0);
-			gbuffer_addstring(b, "\")\n", 3);
+			gbuffer_addstring(b, "\"\n", 0);
 			break;
 		} else {
 			// we have some code, so we write the text and then the code
@@ -100,17 +100,17 @@ int process_template(char *filename, struct gbuffer *b) {
 			}
 			// First the text before the code...
 			if(sc > src) {
-				gbuffer_addstring(b, "print(\"", 7);
+				gbuffer_addstring(b, "_op = _op .. \"", 0);
 				gbuffer_addquoted(b, p, (sc-p));
-				gbuffer_addstring(b, "\")\n", 3);
+				gbuffer_addstring(b, "\"\n", 0);
 			}
 			// Then the code (take care of $)...
 			sc += 2;
 			if(*sc == '$') {
 				sc++;
-				gbuffer_addstring(b, "print(", 6);
+				gbuffer_addstring(b, "_op = _op .. ", 0);
 				gbuffer_addstring(b, sc, (ec-sc));
-				gbuffer_addstring(b, ")\n", 2);
+				gbuffer_addchar(b, '\n');
 			} else {
 				gbuffer_addstring(b, sc, (ec-sc));
 				gbuffer_addchar(b, '\n');
@@ -137,7 +137,7 @@ int template(lua_State *L) {
 		gbuffer_free(b);
 		return 0;
 	}
-	gbuffer_addstring(b, "return 0", 0);
+	gbuffer_addstring(b, "return _op", 0);
 	p = gbuffer_tostring(b, &len);
 	fprintf(stderr, "CODE:\n%s", p);
 
@@ -145,10 +145,11 @@ int template(lua_State *L) {
 	fprintf(stderr, "load  xx=%d\n", xx);
 	gbuffer_free(b);
 
-	// Push the provided table for the new environment...
+	// Push the provided table for the new environment... but set
+	// the global _op first...
 	lua_pushvalue(L, 2);
-	lua_pushstring(L, "x");
-	lua_pushnumber(L, 45);
+	lua_pushstring(L, "_op");
+	lua_pushstring(L, "");
 	lua_settable(L, -3);
 
 	// Create a new metatable... with to reference the
@@ -162,12 +163,12 @@ int template(lua_State *L) {
 	lua_setmetatable(L, -2);
 	lua_setfenv(L, -2);
 	
-
-	if(lua_pcall(L, 0, 0, 0) != 0) {
+	// We expect a single return value (the output)
+	if(lua_pcall(L, 0, 1, 0) != 0) {
 		// we have an error, it will be on the stack
 		return 1;
 	}
 	fprintf(stderr, "pcall  xx=%d\n", xx);
-	return 0;
+	return 1;
 }
 
