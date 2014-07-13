@@ -1,0 +1,19 @@
+[[
+	-- CONFIG reads config from the main.cf config file (with defaults)
+	-- AP is the access point details from "inform"
+
+    local inform_host = CONFIG("inform_host", AP.inform.inform_ip)
+    local inform_port = CONFIG("inform_port", 2345)
+    local inform_url = string.format("http://%s:%d/inform", inform_host, inform_port)
+]]
+mgmt.is_default=false
+mgmt.authkey=[[$AP.authkey]]
+mgmt.cfgversion=[[$AP.cfgversion]]
+mgmt.servers.1.url=[[$inform_url]]
+mgmt.selfrun_guest_mode=[[$CONFIG("selfrun_guest_mode", "pass")]]
+selfrun_guest_mode=[[$CONFIG("selfrun_guest_mode", "pass")]]
+cfgversion=[[$AP.cfgversion]]
+led_enabled=[[$CONFIG("led_enabled", "true")]]
+[[ if(include_authkey) then ]]
+authkey=[[$AP.authkey]]
+[[ end ]]
